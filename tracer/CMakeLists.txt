@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.8)
+project(instrace VERSION 0.1 LANGUAGES C CXX)
+add_library(instrace_x86 SHARED instrace_x86.cpp utils.cpp)
+find_package(DynamoRIO)
+if (NOT DynamoRIO_FOUND)
+  message(FATAL_ERROR "DynamoRIO package required to build")
+endif(NOT DynamoRIO_FOUND)
+configure_DynamoRIO_client(instrace_x86)
+
+set (extensions "drcontainers;drmgr;drreg;drx;droption")
+foreach (ext ${extensions})
+  use_DynamoRIO_extension(instrace_x86 ${ext})
+endforeach()
+
+set(DRRUN_PATH "${DynamoRIO_DIR}/../bin64/drrun.exe")
+file(TO_NATIVE_PATH ${DRRUN_PATH} DRRUN_PATH)
+configure_file(run.bat.in run.bat)
