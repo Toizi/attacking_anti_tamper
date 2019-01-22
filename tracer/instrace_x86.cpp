@@ -96,6 +96,8 @@ typedef struct {
 } per_thread_t;
 
 typedef struct {
+    size_t instr_num;
+
     size_t xdi;
     size_t xsi;
     size_t xbp;
@@ -127,6 +129,7 @@ typedef struct {
     const char *data;
 } saved_memory_t;
 
+static size_t global_instr_count = 0;
 static size_t page_size;
 static client_id_t client_id;
 static app_pc code_cache;
@@ -162,7 +165,7 @@ flush_saved_memories();
 static void
 flush_saved_contexts();
 static void
-clean_call_save_memory(size_t);
+call_save_memory(size_t);
 static void
 clean_call_save_context(size_t);
 static void
@@ -464,7 +467,7 @@ dump_mapped_memory()
 static void
 insert_save_memory(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc)
 {
-    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call_save_memory, false,
+    dr_insert_call(drcontext, ilist, where, (void *)call_save_memory, false,
         // pass as argument the PC of the instruction
         1, OPND_CREATE_INTPTR(pc));
 }
@@ -581,7 +584,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
     int opc = instr_get_opcode(instr);
     opnd_t op = instr_get_src(instr, 0);
     if (opc == OP_cpuid || opc == OP_xgetbv || opnd_get_segment(op) == DR_SEG_GS
-        || opc == OP_syscall || opc == OP_sysenter || opc == OP_rdtsc) { // || opc == OP_rep_stos) {
+        || opc == OP_syscall || opc == OP_sysenter || opc == OP_rdtsc || opc == OP_rdtscp) { // || opc == OP_rep_stos) {
         char buf[128];
         instr_disassemble_to_buffer(drcontext, instr, buf, 128);
         context_save_instr_pc = instr_get_app_pc(instr);
@@ -599,6 +602,8 @@ static void
 save_context(dr_mcontext_t *mcontext)
 {
     saved_context_t s;
+    s.instr_num = global_instr_count - 1;
+
     s.xdi = (size_t)mcontext->xdi;
     s.xsi = (size_t)mcontext->xsi;
     s.xbp = (size_t)mcontext->xbp;
@@ -696,6 +701,7 @@ clean_call_trace(size_t pc)
      *    clean_call();
      */
     // dr_printf("data->buf_ptr %#zx = 1, data->buf_end %#zx\n", data->buf_ptr, -data->buf_end);
+    global_instr_count += 1;
     *(size_t*)(data->buf_ptr) = pc;
     data->buf_ptr += sizeof(ins_ref_t);
     if ((size_t)data->buf_ptr >= (size_t)-data->buf_end)
@@ -703,14 +709,46 @@ clean_call_trace(size_t pc)
 }
 
 static void
-clean_call_save_memory(size_t pc)
+call_save_memory(size_t pc)
 {
     void *drcontext = dr_get_current_drcontext();
+    dr_mcontext_t mcontext = { 0 };
+    mcontext.size = sizeof(dr_mcontext_t);
+    mcontext.flags = DR_MC_ALL;
+    if (!dr_get_mcontext(drcontext, &mcontext)) {
+        dr_printf("dr_get_mcontext failed\n");
+        return;
+    }
+
+#ifndef MEMORY_SAVE_STACK_ONLY
+    // query the entire address space and save anything that looks like data
+    byte *addr = 0;
+    dr_mem_info_t mem_info = { 0 };
+    while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL) {
+        dr_printf("dr_query_memory_ex = %#zx, type %x,  prot %x, internal %d\n", addr, mem_info.type, mem_info.prot, dr_memory_is_dr_internal(addr));
+        addr = mem_info.base_pc + mem_info.size;
+        // only interested in data that can be read and written
+        // if (mem_info.type != DR_MEMTYPE_DATA || mem_info.prot != (DR_MEMPROT_READ | DR_MEMPROT_WRITE) || dr_memory_is_dr_internal(addr))
+        if ((mem_info.prot & (DR_MEMPROT_GUARD | DR_MEMPROT_EXEC)) != 0 || (mem_info.prot & DR_MEMPROT_READ) == 0 || dr_memory_is_dr_internal(addr))
+            continue;
+        
+        saved_memory_t saved_memory = { 0 };
+        saved_memory.trace_addr = global_instr_count - 1;
+        saved_memory.start_addr = (size_t)mem_info.base_pc;
+        saved_memory.size = mem_info.size;
+        saved_memory.data = (const char*)dr_global_alloc(saved_memory.size);
+
+        memcpy((void*)saved_memory.data, (void*)saved_memory.start_addr, saved_memory.size);
+
+        saved_memories.push_back(saved_memory);
+    }
+#else
     if (saved_stack_start == -1 || saved_stack_end == -1) {
         dr_printf("saved_stack bounds invalid: %#zx - %#zx\n", saved_stack_start, saved_stack_end);
     }
+
     saved_memory_t saved_memory = { 0 };
-    saved_memory.trace_addr = pc;
+    saved_memory.trace_addr = global_instr_count - 1;
     saved_memory.start_addr = saved_stack_start;
     saved_memory.size = saved_stack_end - saved_stack_start;
     saved_memory.data = (const char*)dr_global_alloc(saved_memory.size);
@@ -718,6 +756,12 @@ clean_call_save_memory(size_t pc)
     memcpy((void*)saved_memory.data, (void*)saved_memory.start_addr, saved_memory.size);
 
     saved_memories.push_back(saved_memory);
+#endif
+
+    if (!dr_set_mcontext(drcontext, &mcontext)) {
+        dr_printf("dr_set_mcontext failed\n");
+        dr_abort();
+    }
 }
 
 static void
