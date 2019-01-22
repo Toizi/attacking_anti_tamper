@@ -63,11 +63,12 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
     pc = trace[0].addr
     set_triton_context(ctx, saved_contexts[0], set_rip=True)
 
+    print('[*] Trace length {}'.format(len(trace)))
     next_saved_memory = 0
     next_saved_context = 1
     print('[*] Starting emulation at {:#x}'.format(pc))
     count = 0
-    monitored_addr = 0x000000000014fd98
+    monitored_addr = 0x00007ffeed9eb2d0
     monitored_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
     print("[D] Monitored val start: {:#x}".format(u64(monitored_val)))
     while pc:
@@ -81,22 +82,30 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
 
             skip_inst = False
             if ctx.processing(inst) == False:
-                if inst.getType() == OPCODE.XGETBV:
+                t = inst.getType()
+                if t == OPCODE.X86.XGETBV:
                     print('skipping xgetbv')
+                    skip_inst = True
+                elif t == OPCODE.X86.RDTSCP:
+                    print('skipping rdtscp')
                     skip_inst = True
                 else:
                     print('Instruction not supported: {}'.format(inst))
                     break
 
-            print("{0:06} {1}".format(count, inst))
+            print("{0:07} {1}".format(count, inst))
 
-            if len(saved_contexts) > next_saved_context and pc == saved_contexts[next_saved_context].rip:
+            if len(saved_contexts) > next_saved_context and count == saved_contexts[next_saved_context].instr_num:
                 print("[*] saved_context {}".format(next_saved_context))
+                if pc != saved_contexts[next_saved_context].rip:
+                    print("[-] saved context wrong pc: {:#x} != {:#x}".format(pc, saved_contexts[next_saved_context].rip))
+                    return
                 set_triton_context(ctx, saved_contexts[next_saved_context])
                 next_saved_context += 1
-            if len(saved_memories) > next_saved_memory and pc == saved_memories[next_saved_memory].trace_addr:
-                print("[*] saved_memory {}".format(next_saved_memory))
-                ctx.setConcreteMemoryAreaValue(saved_memories[next_saved_memory].start_addr, saved_memories[next_saved_memory].data)
+            while len(saved_memories) > next_saved_memory and count == saved_memories[next_saved_memory].trace_addr:
+                saved_memory = saved_memories[next_saved_memory]
+                print("[*] saved_memory {}: {:#x} - {:#x}".format(next_saved_memory, saved_memory.start_addr, saved_memory.start_addr + saved_memory.size))
+                ctx.setConcreteMemoryAreaValue(saved_memory.start_addr, saved_memory.data.tobytes())
                 next_saved_memory += 1
 
             if skip_inst:
@@ -112,17 +121,28 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
             print("[D] Monitored value changed: {:#x} => {:#x}".format(u64(monitored_val), u64(cur_val)))
             monitored_val = cur_val
         count += 1
+        if pc == 0x7ffeed9a6e1c:
+            print_triton_context(ctx)
+            print_triton_memory_at_register(ctx, "r8")
+            print_triton_memory_at_register(ctx, "r9")
+        # if pc == 0x7ffee9eb5f5a:
+        #     print_triton_context(ctx)
+        #     print_triton_memory_at_register(ctx, "rax")
+
         # if pc == 0x7FFF9E494245:
         #     print_triton_context(ctx)
-        if count >= 20876:
-            print_triton_context(ctx)
-            if pc == 0x7fff9e494224:
-                print_triton_memory_at_register(ctx, "rax")
+        # if count >= 20876:
+        #     print_triton_context(ctx)
+        #     if pc == 0x7fff9e494224:
+        #         print_triton_memory_at_register(ctx, "rax")
 
 
         if pc != trace[count].addr:
             print('[-] Execution diverged at {:#x}, trace {:#x}'.format(pc, trace[count].addr))
             print_triton_context(ctx)
+            print('[*] Next trace instr')
+            for i in range(10):
+                print('{:#018x}'.format(trace[count+i].addr))
             # set_triton_context(ctx, saved_contexts[next_saved_context])
             break
         # if count > 5000:
@@ -182,7 +202,7 @@ registers = ['rdi', 'rsi', 'rbp', 'rsp', 'rbx', 'rdx', 'rcx', 'rax',
 
 class saved_context_t(cstruct.CStruct):
     __byte_order__ = cstruct.LITTLE_ENDIAN
-    __struct__ = '\n'.join(['uint64_t {};'.format(reg) for reg in registers])
+    __struct__ = 'uint64_t instr_num;\n' + '\n'.join(['uint64_t {};'.format(reg) for reg in registers])
 
 def read_saved_contexts(fpath):
     # (str) -> Union[None, List[saved_context_t]]
@@ -217,19 +237,21 @@ class saved_memory_t():
 
 
 def read_saved_memories(fpath):
-    # (str) -> Union[None, List[saved_context_t]]
+    # (str) -> Union[None, List[saved_memory_t]]
     with open(fpath, 'rb') as f:
         memory_data = f.read()
 
+    view = memoryview(memory_data)
     memories = []
     cur_offset = 0
-    while cur_offset < len(memory_data):
+    while cur_offset < len(view):
         m = saved_memory_t()
-        consumed_bytes = m.unpack(memory_data[cur_offset:]) 
+        consumed_bytes = m.unpack(view[cur_offset:]) 
         cur_offset += consumed_bytes
         memories.append(m)
 
     return memories
+
 
 def read_trace(fpath):
     # (str) -> Union[None, List[Tuple[int, int]]]
@@ -261,6 +283,8 @@ def main():
     if not os.path.exists(input_path):
         print("[-] input path does not exists: {}".format(input_path))
         exit(1)
+    print('[+] start reading')
+    sys.stdout.flush()
 
     saved_contexts = read_saved_contexts(os.path.join(input_path, 'saved_contexts.bin'))
     if not saved_contexts:
@@ -268,16 +292,24 @@ def main():
     if saved_contexts[0].rip != (-1 & 0xffffffffffffffff):
         print("[-] saved states do not have initial state with xip = -1")
         return
+    print('[+] read saved contexts')
+    sys.stdout.flush()
 
     trace = read_trace(input_path)
     if not trace:
         return
+    print('[+] read trace')
+    sys.stdout.flush()
     
     saved_memories = read_saved_memories(os.path.join(input_path, 'saved_memories.bin'))
     if saved_memories is None:
         return
+    print('[+] read memories')
+    sys.stdout.flush()
 
     ctx = setup_triton(os.path.join(input_path, 'modules/'))
+    print('[+] setup triton context')
+    sys.stdout.flush()
     emulate(ctx, trace, saved_contexts, saved_memories)
 
 
