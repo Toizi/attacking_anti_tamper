@@ -251,6 +251,10 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
     }
     size_t start_addr = (size_t)info->start;
     size_t end_addr = (size_t)info->end;
+    // size_t mon_addr = 0x00007ffccbc5d070;
+    // if (start_addr <= mon_addr && mon_addr < end_addr) {
+    //     dr_printf("monitored_value at module_load : %#zx = %#zx\n", mon_addr, *(size_t*)mon_addr);
+    // }
     dr_printf("module_load: %s, loaded %d, from %#zx to %#zx\n", name.c_str(), loaded, start_addr, end_addr);
     dr_flush_file(STDOUT);
     std::stringstream ss;
@@ -432,8 +436,12 @@ dump_mapped_memory()
         std::string full_name { name };
         size_t last_backslash_pos = full_name.rfind('\\');
         std::string short_name = full_name.substr(last_backslash_pos + 1);
-        if (short_name.find("ntdll") != std::string::npos)
-            return;
+        if (short_name.find("ntdll") != std::string::npos) {
+            // size_t *addr_to_read = (size_t*)0x00007ffccbb9aff0;
+            // dr_printf("dump_mapped_memory: monitored_addr: %#zx = %#zx\n", addr_to_read, *addr_to_read);
+            // return;
+            continue;
+        }
 
         dr_printf("%#018zx - %#018zx, %s\n", start_addr, end_addr, short_name.c_str());
 
@@ -583,12 +591,16 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
 
     int opc = instr_get_opcode(instr);
     opnd_t op = instr_get_src(instr, 0);
+    bool dbg_dump = false;//instr_get_app_pc(instr) == (app_pc)0x7ffccbb56e16;
     if (opc == OP_cpuid || opc == OP_xgetbv || opnd_get_segment(op) == DR_SEG_GS
-        || opc == OP_syscall || opc == OP_sysenter || opc == OP_rdtsc || opc == OP_rdtscp) { // || opc == OP_rep_stos) {
+        || opc == OP_syscall || opc == OP_sysenter
+        || opc == OP_rdtsc || opc == OP_rdtscp
+        || opc == OP_rdrand
+        || dbg_dump) { // || opc == OP_rep_stos) {
         char buf[128];
         instr_disassemble_to_buffer(drcontext, instr, buf, 128);
         context_save_instr_pc = instr_get_app_pc(instr);
-        memory_save_instr_pc = opc == OP_syscall || opc == OP_sysenter ? context_save_instr_pc : 0;
+        memory_save_instr_pc = opc == OP_syscall || opc == OP_sysenter || dbg_dump ? context_save_instr_pc : 0;
         dr_printf("context%s_save_instr %#zx %d %s\n",
             memory_save_instr_pc != 0 ? "/memory" : "", context_save_instr_pc, instr_count, buf);
     }
@@ -701,6 +713,15 @@ clean_call_trace(size_t pc)
      *    clean_call();
      */
     // dr_printf("data->buf_ptr %#zx = 1, data->buf_end %#zx\n", data->buf_ptr, -data->buf_end);
+    // size_t *addr_to_read = (size_t*)0x00007ffccbb9aff0;
+    // if (pc == (size_t)0x7ffccbb56e1c) {
+    //     dr_printf("%#018zx: monitored_addr: %#zx = %#zx\n", pc, addr_to_read, *addr_to_read);
+    // }
+
+    // if (global_instr_count == 0) {
+    //     dr_printf("%#018zx: monitored_addr: %#zx = %#zx\n", pc, addr_to_read, *addr_to_read);
+    // }
+
     global_instr_count += 1;
     *(size_t*)(data->buf_ptr) = pc;
     data->buf_ptr += sizeof(ins_ref_t);
