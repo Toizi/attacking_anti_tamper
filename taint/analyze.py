@@ -4,8 +4,10 @@ import re
 import os
 import sys
 import cstruct
+import pickle
 from glob import glob
 from collections import namedtuple
+from create_patch import SavedInstruction
 
 from triton import *
 try:
@@ -59,7 +61,7 @@ def print_triton_memory_at_register(ctx, reg, size=0x40):
 
 
 def emulate(ctx, trace, saved_contexts, saved_memories):
-    # type: (TritonContext, List[Trace], List[], List[]) -> Union[None, List[int]]
+    # type: (TritonContext, List[Trace], List[], List[]) -> Union[None, List[int, Instruction]]
     old_pc = 0
     pc = trace[0].addr
     set_triton_context(ctx, saved_contexts[0], set_rip=True)
@@ -72,7 +74,7 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
     monitored_addr = 0x7FFCCBC5D070
     monitored_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
     print("[D] Monitored val start: {:#x}".format(u64(monitored_val)))
-    tainted_addrs = set()
+    tainted_addrs = dict()
     while pc:
         opcodes = ctx.getConcreteMemoryAreaValue(pc, 16)
 
@@ -122,7 +124,7 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
             cond = pc == old_pc
 
         if inst.isTainted():
-            tainted_addrs.add(inst.getAddress())
+            tainted_addrs[inst.getAddress()] = SavedInstruction(ctx, inst)
 
 
         # cur_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
@@ -345,13 +347,19 @@ def main():
     ctx = setup_triton(os.path.join(input_path, 'modules/'))
     print('[+] setup triton context')
     sys.stdout.flush()
-    tainted_addresses = emulate(ctx, trace, saved_contexts, saved_memories)
-    if tainted_addresses is None:
+    tainted_locs = emulate(ctx, trace, saved_contexts, saved_memories)
+    if tainted_locs is None:
         return
     
     print('[+] Tainted addresses:')
-    for addr in sorted(tainted_addresses):
-        print('{:#018x}'.format(addr))
+    for addr in sorted(tainted_locs):
+        inst = tainted_locs[addr]
+        print('{:#018x}: {}'.format(addr, inst))
+    
+    tainted_loc_fpath = os.path.join(input_path, 'tainted_locs.bin')
+    print('[+] Saving tainted locations as {}'.format(tainted_loc_fpath))
+    with open(tainted_loc_fpath, 'wb') as f:
+        pickle.dump(tainted_locs.values(), f, pickle.HIGHEST_PROTOCOL)
 
 
 if __name__ == '__main__':
