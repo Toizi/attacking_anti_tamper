@@ -50,8 +50,8 @@ def create_patch(fpath):
                     print('patch {} for {} is too big'.format(l2h(encoding), tinst))
                     return None
                 patches.append((tinst.getAddress(), l2b(encoding)))
-        else:
-            patches.append((tinst.getAddress(), len(inst.opcode) * '\x90'))
+            else:
+                patches.append((tinst.getAddress(), len(inst.opcode) * '\x90'))
     return patches
 
 
