@@ -596,6 +596,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         || opc == OP_syscall || opc == OP_sysenter
         || opc == OP_rdtsc || opc == OP_rdtscp
         || opc == OP_rdrand
+        || opc == OP_vpmovmskb
         || dbg_dump) { // || opc == OP_rep_stos) {
         char buf[128];
         instr_disassemble_to_buffer(drcontext, instr, buf, 128);

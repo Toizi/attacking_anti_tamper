@@ -18,7 +18,9 @@ except ImportError:
 
 DEBUG = True
 # MAIN_END = 0x1400038A8 # test_tamper_debug
-MAIN_END = 0x140001B58 # test_tamper
+# MAIN_END = 0x140001B58 # test_tamper
+# MAIN_END = 0x140001818 # test_medium
+MAIN_END = 0x1400020B8 # test_large_debug
 
 def dprint(*args, **kargs):
     if DEBUG:
@@ -60,6 +62,7 @@ def print_triton_memory_at_register(ctx, reg, size=0x40):
     print_triton_memory(ctx, reg_val - size, 2*size)
 
 
+skipped_opcodes = { OPCODE.X86.XGETBV, OPCODE.X86.RDTSCP, OPCODE.X86.RDRAND, OPCODE.X86.VPCMPEQB, OPCODE.X86.VPMOVMSKB, OPCODE.X86.VZEROUPPER }
 def emulate(ctx, trace, saved_contexts, saved_memories):
     # type: (TritonContext, List[Trace], List[], List[]) -> Union[None, List[int, Instruction]]
     old_pc = 0
@@ -86,15 +89,8 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
 
             skip_inst = False
             if ctx.processing(inst) == False:
-                t = inst.getType()
-                if t == OPCODE.X86.XGETBV:
-                    print('skipping xgetbv')
-                    skip_inst = True
-                elif t == OPCODE.X86.RDTSCP:
-                    print('skipping rdtscp')
-                    skip_inst = True
-                elif t == OPCODE.X86.RDRAND:
-                    print('skipping rdrand')
+                if inst.getType() in skipped_opcodes:
+                    print('skipping next inst')
                     skip_inst = True
                 else:
                     print('Instruction not supported: {}'.format(inst))
