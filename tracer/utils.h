@@ -43,9 +43,11 @@
 #ifdef WINDOWS
 #    define IF_WINDOWS(x) x
 #    define IF_UNIX_ELSE(x, y) y
+#    define PATHSEP '\\'
 #else
 #    define IF_WINDOWS(x)
 #    define IF_UNIX_ELSE(x, y) x
+#    define PATHSEP '/'
 #endif
 
 #ifdef WINDOWS

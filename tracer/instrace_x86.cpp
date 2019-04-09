@@ -67,7 +67,7 @@
 static droption_t<std::string> op_logdir
 (DROPTION_SCOPE_CLIENT, "logdir", "", "Directory where log files and other artifacts will be written to",
  "");
-static std::string logdir = "Y:\\master_thesis_old\\debray\\samples\\instrace_logs\\";
+static std::string logdir = "";
 /* Each ins_ref_t describes an executed instruction. */
 typedef struct _ins_ref_t {
     app_pc pc;
@@ -192,8 +192,8 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         if (strcmp("-logdir", arg) == 0) {
             if (i + 1 < argc) {
                 logdir = std::string{ argv[i+1] };
-                if (logdir[logdir.size() - 1] != '\\')
-                    logdir += '\\';
+                if (logdir[logdir.size() - 1] != PATHSEP)
+                    logdir += PATHSEP;
                 ++i;
             } else {
                 dr_fprintf(STDERR, "-logdir specified but no directory specified\n");
@@ -212,6 +212,10 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     //     dr_abort();
     // }
     dr_fprintf(STDERR, "parsing args done\n");
+    if (logdir.empty()) {
+        dr_fprintf(STDERR, "fatal error: missing argument -logdir {path}\n");
+        dr_abort();
+    }
     // if (!op_logdir.get_value().empty()) {
     //     dr_printf("logdir: %s\n", op_logdir.get_value().c_str());
     // }
@@ -282,7 +286,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
     dr_flush_file(STDOUT);
     std::stringstream ss;
     // ss << op_logdir.get_value() << '\\';
-    ss << logdir << "modules\\";
+    ss << logdir << "modules" << PATHSEP;
     ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << start_addr;
     ss << "-";
     ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << end_addr;
@@ -428,7 +432,7 @@ dump_mapped_memory()
 
     byte *addr = 0;
     dr_mem_info_t mem_info = { 0 };
-    while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL) {
+    while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL && addr != (byte*)-1) {
         // dr_printf("dr_query_memory_ex = %#zx, type %x,  prot %x, internal %d\n", addr, mem_info.type, mem_info.prot, dr_memory_is_dr_internal(addr));
         addr = mem_info.base_pc + mem_info.size;
         // only interested in data that can be read and written
@@ -472,7 +476,7 @@ dump_mapped_memory()
         // dump memory
         std::stringstream ss;
         // ss << op_logdir.get_value() << '\\';
-        ss << logdir << "modules\\";
+        ss << logdir << "modules" << PATHSEP;
         ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << start_addr;
         ss << "-";
         ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << end_addr;
@@ -776,7 +780,7 @@ call_save_memory(size_t pc)
     // query the entire address space and save anything that looks like data
     byte *addr = 0;
     dr_mem_info_t mem_info = { 0 };
-    while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL) {
+    while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL && addr != (byte*)-1) {
         // dr_printf("dr_query_memory_ex = %#zx, type %x,  prot %x, internal %d\n", addr, mem_info.type, mem_info.prot, dr_memory_is_dr_internal(addr));
         addr = mem_info.base_pc + mem_info.size;
         // only interested in data that can be written to since read only data should not change

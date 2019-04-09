@@ -36,8 +36,8 @@ if "!build_type!" == "" (
 )
 
 set mypath=%~dp0
-set build_path=!mypath!\..\build_tracer_!build_type!
-set out_path=!mypath!\..\out_tracer_!build_type!
+set build_path=!mypath!\..\build_tracer_!build_type!\windows
+set out_path=!mypath!\..\out_tracer_!build_type!\windows
 cd !mypath!
 
 if not exist !build_path! (
@@ -52,7 +52,7 @@ if not exist !build_path! (
         -D "CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=1" ^
         -D "CMAKE_INSTALL_PREFIX=!out_path!" ^
         -D "DynamoRIO_DIR:PATH=!mypath!/../DynamoRIO-Windows-7.1.0-1/cmake" ^
-        ../tracer
+        ../../tracer
 
     cd ..
 )
