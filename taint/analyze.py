@@ -18,9 +18,10 @@ except ImportError:
 
 DEBUG = True
 # MAIN_END = 0x1400038A8 # test_tamper_debug
-# MAIN_END = 0x140001B58 # test_tamper
+MAIN_END = 0x140001C6A # test_tamper
 # MAIN_END = 0x140001818 # test_medium
-MAIN_END = 0x1400020B8 # test_large_debug
+# MAIN_END = 0x1400020B8 # test_large_debug
+# MAIN_END = 0x0001400012CA
 
 def dprint(*args, **kargs):
     if DEBUG:
@@ -74,7 +75,7 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
     next_saved_context = 1
     print('[*] Starting emulation at {:#x}'.format(pc))
     count = 0
-    monitored_addr = 0x7FFCCBC5D070
+    monitored_addr = 0x000000000034a000
     monitored_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
     print("[D] Monitored val start: {:#x}".format(u64(monitored_val)))
     tainted_addrs = dict()

@@ -67,7 +67,7 @@
 static droption_t<std::string> op_logdir
 (DROPTION_SCOPE_CLIENT, "logdir", "", "Directory where log files and other artifacts will be written to",
  "");
-static std::string logdir = "Y:\\master_thesis\\debray\\samples\\instrace_logs\\";
+static std::string logdir = "Y:\\master_thesis_old\\debray\\samples\\instrace_logs\\";
 /* Each ins_ref_t describes an executed instruction. */
 typedef struct _ins_ref_t {
     app_pc pc;
@@ -185,12 +185,33 @@ instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where);
 DR_EXPORT void
 dr_client_main(client_id_t id, int argc, const char *argv[])
 {
-    // parse_argv crashes...
+    dr_fprintf(STDERR, "parsing args\n");
+    for (int i = 1; i < argc; ++i) {
+        const char *arg = argv[i];
+        dr_fprintf(STDERR, "%s\n", arg);
+        if (strcmp("-logdir", arg) == 0) {
+            if (i + 1 < argc) {
+                logdir = std::string{ argv[i+1] };
+                if (logdir[logdir.size() - 1] != '\\')
+                    logdir += '\\';
+                ++i;
+            } else {
+                dr_fprintf(STDERR, "-logdir specified but no directory specified\n");
+                dr_abort();
+            }
+        } else {
+            dr_fprintf(STDERR, "argument ignored: '%s'\n", *arg);
+        }
+        dr_fprintf(STDERR, "loop end\n");
+    }
+    // // droption_parser_t::parse_argv crashes...
     // std::string parse_err;
-    // if (!droption_parser_t::parse_argv(DROPTION_SCOPE_CLIENT, argc, argv, &parse_err, nullptr)) {
+    // int last_idx = 0;
+    // if (!droption_parser_t::parse_argv(DROPTION_SCOPE_CLIENT, argc, argv, &parse_err, &last_idx)) {
     //     dr_fprintf(STDERR, "Usage error: %s\n", parse_err.c_str());
     //     dr_abort();
     // }
+    dr_fprintf(STDERR, "parsing args done\n");
     // if (!op_logdir.get_value().empty()) {
     //     dr_printf("logdir: %s\n", op_logdir.get_value().c_str());
     // }
@@ -227,8 +248,10 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
 
     module_data_t *main_module = dr_get_main_module();
     main_entry_pc = main_module->entry_point;
+    dr_free_module_data(main_module);
 
-    code_cache_init();
+
+    // code_cache_init();
     dr_log(NULL, DR_LOG_ALL, 1, "Client 'instrace' initializing\n");
 #ifdef SHOW_RESULTS
     if (dr_is_notify_on()) {
@@ -377,8 +400,6 @@ event_thread_exit(void *drcontext)
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
 }
 
-#include "windows.h"
-#include "psapi.h"
 static void
 dump_mapped_memory()
 {
@@ -405,18 +426,17 @@ dump_mapped_memory()
         dr_abort();
     }
 
-    // TODO: rewrite using dr_query_memory
-    MEMORY_BASIC_INFORMATION mbi = { 0 };
-    while (1) {
-        if (VirtualQuery((void*)((size_t)mbi.BaseAddress + (size_t)mbi.RegionSize), &mbi, sizeof(mbi)) == 0) {
-            dr_printf("VirtualQuery failed: %d\n", GetLastError());
-            return;
-        }
-        if (dr_memory_is_dr_internal((const byte*)mbi.BaseAddress) || dr_memory_is_in_client((const byte*)mbi.BaseAddress) || (mbi.State & MEM_COMMIT) == 0)
+    byte *addr = 0;
+    dr_mem_info_t mem_info = { 0 };
+    while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL) {
+        // dr_printf("dr_query_memory_ex = %#zx, type %x,  prot %x, internal %d\n", addr, mem_info.type, mem_info.prot, dr_memory_is_dr_internal(addr));
+        addr = mem_info.base_pc + mem_info.size;
+        // only interested in data that can be read and written
+        if ((mem_info.prot & (DR_MEMPROT_GUARD)) != 0 || (mem_info.prot & DR_MEMPROT_READ) == 0 || dr_memory_is_dr_internal(addr))
             continue;
-
-        size_t size = (size_t)mbi.RegionSize;
-        size_t start_addr = (size_t)mbi.BaseAddress;
+        
+        size_t size = (size_t)mem_info.size;
+        size_t start_addr = (size_t)mem_info.base_pc;
         size_t end_addr = start_addr + size;
 
         // might be too naive to only save it at start since it could grow during runtime
@@ -425,15 +445,19 @@ dump_mapped_memory()
             saved_stack_end = end_addr;
         }
 
-        char name[512] = { 0 };
-        GetMappedFileNameA(GetCurrentProcess(), mbi.BaseAddress, name, 512);
-
         if (!dr_memory_is_readable((byte*)start_addr, size)) {
             // dr_printf("Memory is not readable, won't dump. Protections: %x\n", mbi.Protect);
             continue;
         }
 
-        std::string full_name { name };
+        std::string full_name { "" };
+        module_data_t *module = dr_lookup_module((byte*)start_addr);
+        if (module) {
+            full_name = dr_module_preferred_name(module);
+            dr_free_module_data(module);
+            module = nullptr;
+        }
+
         size_t last_backslash_pos = full_name.rfind('\\');
         std::string short_name = full_name.substr(last_backslash_pos + 1);
         if (short_name.find("ntdll") != std::string::npos) {
@@ -460,22 +484,24 @@ dump_mapped_memory()
             break;
         }
         size_t buf_size = end_addr - start_addr;
+        dr_switch_to_app_state(drcontext);
         size_t num_written = dr_write_file(f, (void*)start_addr, buf_size);
+        dr_switch_to_dr_state(drcontext);
         if (num_written != buf_size) {
             dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written/buf_size);
         }
         dr_close_file(f);
     }
-    if (!dr_set_mcontext(drcontext, &mcontext)) {
-        dr_printf("dr_set_mcontext failed\n");
-        dr_abort();
-    }
+    // if (!dr_set_mcontext(drcontext, &mcontext)) {
+    //     dr_printf("dr_set_mcontext failed\n");
+    //     dr_abort();
+    // }
 }
 
 static void
 insert_save_memory(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc)
 {
-    dr_insert_call(drcontext, ilist, where, (void *)call_save_memory, false,
+    dr_insert_clean_call(drcontext, ilist, where, (void *)call_save_memory, false,
         // pass as argument the PC of the instruction
         1, OPND_CREATE_INTPTR(pc));
 }
@@ -542,7 +568,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         // dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_save_context, false,
         //     // pass as argument the PC of the instruction
         //     1, OPND_CREATE_INTPTR(-1));
-        dr_insert_call(drcontext, bb, instr, (void *)dump_mapped_memory, false,
+        dr_insert_clean_call(drcontext, bb, instr, (void *)dump_mapped_memory, false,
             // pass as argument the PC of the instruction
             0, NULL);
         insert_save_context(drcontext, bb, instr, (app_pc)-1);
@@ -590,16 +616,20 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
     }
 
     int opc = instr_get_opcode(instr);
-    opnd_t op = instr_get_src(instr, 0);
+    bool uses_gs_segment = false;
+    if (instr_num_srcs(instr) > 0) {
+        opnd_t op = instr_get_src(instr, 0);
+        uses_gs_segment = opnd_is_far_memory_reference(op) && opnd_get_segment(op) == DR_SEG_GS;
+    }
     bool dbg_dump = false;//instr_get_app_pc(instr) == (app_pc)0x7ffccbb56e16;
-    if (opc == OP_cpuid || opc == OP_xgetbv || opnd_get_segment(op) == DR_SEG_GS
+    if (opc == OP_cpuid || opc == OP_xgetbv || uses_gs_segment
         || opc == OP_syscall || opc == OP_sysenter
         || opc == OP_rdtsc || opc == OP_rdtscp
         || opc == OP_rdrand
         || opc == OP_vpmovmskb
         || dbg_dump) { // || opc == OP_rep_stos) {
         char buf[128];
-        instr_disassemble_to_buffer(drcontext, instr, buf, 128);
+        instr_disassemble_to_buffer(drcontext, instr, buf, sizeof(buf));
         context_save_instr_pc = instr_get_app_pc(instr);
         memory_save_instr_pc = opc == OP_syscall || opc == OP_sysenter || dbg_dump ? context_save_instr_pc : 0;
         dr_printf("context%s_save_instr %#zx %d %s\n",
@@ -747,11 +777,11 @@ call_save_memory(size_t pc)
     byte *addr = 0;
     dr_mem_info_t mem_info = { 0 };
     while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL) {
-        dr_printf("dr_query_memory_ex = %#zx, type %x,  prot %x, internal %d\n", addr, mem_info.type, mem_info.prot, dr_memory_is_dr_internal(addr));
+        // dr_printf("dr_query_memory_ex = %#zx, type %x,  prot %x, internal %d\n", addr, mem_info.type, mem_info.prot, dr_memory_is_dr_internal(addr));
         addr = mem_info.base_pc + mem_info.size;
-        // only interested in data that can be read and written
+        // only interested in data that can be written to since read only data should not change
         // if (mem_info.type != DR_MEMTYPE_DATA || mem_info.prot != (DR_MEMPROT_READ | DR_MEMPROT_WRITE) || dr_memory_is_dr_internal(addr))
-        if ((mem_info.prot & (DR_MEMPROT_GUARD | DR_MEMPROT_EXEC)) != 0 || (mem_info.prot & DR_MEMPROT_READ) == 0 || dr_memory_is_dr_internal(addr))
+        if ((mem_info.prot & (DR_MEMPROT_GUARD | DR_MEMPROT_EXEC)) != 0 || (mem_info.prot & DR_MEMPROT_WRITE) == 0 || dr_memory_is_dr_internal(addr))
             continue;
         
         saved_memory_t saved_memory = { 0 };
@@ -760,7 +790,9 @@ call_save_memory(size_t pc)
         saved_memory.size = mem_info.size;
         saved_memory.data = (const char*)dr_global_alloc(saved_memory.size);
 
+        dr_switch_to_app_state(drcontext);
         memcpy((void*)saved_memory.data, (void*)saved_memory.start_addr, saved_memory.size);
+        dr_switch_to_dr_state(drcontext);
 
         saved_memories.push_back(saved_memory);
     }

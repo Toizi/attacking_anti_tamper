@@ -48,11 +48,10 @@ if not exist !build_path! (
     set CXX=cl.exe
 
     cmake -G "Ninja" ^
-        -D "CMAKE_C_FLAGS=/D OUTPUT_TEXT" ^
         -D "CMAKE_BUILD_TYPE:STRING=!build_type!" ^
         -D "CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=1" ^
         -D "CMAKE_INSTALL_PREFIX=!out_path!" ^
-        -D "DynamoRIO_DIR:PATH=!mypath!/../DynamoRIO/cmake" ^
+        -D "DynamoRIO_DIR:PATH=!mypath!/../DynamoRIO-Windows-7.1.0-1/cmake" ^
         ../tracer
 
     cd ..
