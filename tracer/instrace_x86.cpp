@@ -300,7 +300,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
     size_t buf_size = end_addr - start_addr;
     size_t num_written = dr_write_file(f, (void*)start_addr, buf_size);
     if (num_written != buf_size) {
-        dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written/buf_size);
+        dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
     }
     dr_close_file(f);
 }
@@ -492,7 +492,7 @@ dump_mapped_memory()
         size_t num_written = dr_write_file(f, (void*)start_addr, buf_size);
         dr_switch_to_dr_state(drcontext);
         if (num_written != buf_size) {
-            dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written/buf_size);
+            dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
         }
         dr_close_file(f);
     }
