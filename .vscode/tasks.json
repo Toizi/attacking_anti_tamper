@@ -4,9 +4,17 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "build_tracer",
+            "label": "build_tracer_windows",
             "type": "shell",
             "command": "${workspaceRoot}/tracer/build.bat Debug",
+            "group": {
+                "kind": "build",
+            }
+        },
+        {
+            "label": "build_tracer_linux",
+            "type": "shell",
+            "command": "${workspaceRoot}/tracer/build.sh Release",
             "group": {
                 "kind": "build",
                 "isDefault": true
