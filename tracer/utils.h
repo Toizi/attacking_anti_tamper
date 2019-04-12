@@ -44,10 +44,12 @@
 #    define IF_WINDOWS(x) x
 #    define IF_UNIX_ELSE(x, y) y
 #    define PATHSEP '\\'
+#    define TLS_SEGMENT DR_SEG_GS
 #else
 #    define IF_WINDOWS(x)
 #    define IF_UNIX_ELSE(x, y) x
 #    define PATHSEP '/'
+#    define TLS_SEGMENT DR_SEG_FS
 #endif
 
 #ifdef WINDOWS

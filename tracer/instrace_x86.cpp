@@ -63,10 +63,16 @@
 #include <string>
 #include <sstream>
 
-// arg parsing crashes... use hardcoded path for now
-static droption_t<std::string> op_logdir
-(DROPTION_SCOPE_CLIENT, "logdir", "", "Directory where log files and other artifacts will be written to",
- "");
+#include <unistd.h>
+#include <asm/ldt.h>   
+#include <sys/syscall.h>
+#include <sys/prctl.h>
+#include <asm/prctl.h>
+
+// static droption_t<std::string> op_logdir
+// (DROPTION_SCOPE_CLIENT, "logdir", "", "Directory where log files and other artifacts will be written to",
+//  "");
+
 static std::string logdir = "";
 /* Each ins_ref_t describes an executed instruction. */
 typedef struct _ins_ref_t {
@@ -119,6 +125,8 @@ typedef struct {
     size_t xflags;
 
     size_t xip;
+
+    size_t fs;
 } saved_context_t;
 
 typedef struct {
@@ -132,7 +140,6 @@ typedef struct {
 static size_t global_instr_count = 0;
 static size_t page_size;
 static client_id_t client_id;
-static app_pc code_cache;
 static void *mutex;     /* for multithread support */
 static uint64 num_refs; /* keep a global memory reference count */
 static int tls_index;
@@ -165,7 +172,7 @@ flush_saved_memories();
 static void
 flush_saved_contexts();
 static void
-call_save_memory(size_t);
+clean_call_save_memory(size_t);
 static void
 clean_call_save_context(size_t);
 static void
@@ -173,11 +180,7 @@ clean_call_trace(size_t);
 static void
 clean_call(void);
 static void
-instrace(void *drcontext);
-static void
-code_cache_init(void);
-static void
-code_cache_exit(void);
+flush_saved_traces(void *drcontext);
 static void
 instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where);
 
@@ -232,6 +235,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
                                   0 };  /* numeric priority */
     dr_set_client_name("DynamoRIO Sample Client 'instrace'",
                        "http://dynamorio.org/issues");
+    disassemble_set_syntax(DR_DISASM_INTEL);
     page_size = dr_page_size();
     if (!drmgr_init() || drreg_init(&ops) != DRREG_SUCCESS)
         DR_ASSERT(false);
@@ -255,7 +259,6 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     dr_free_module_data(main_module);
 
 
-    // code_cache_init();
     dr_log(NULL, DR_LOG_ALL, 1, "Client 'instrace' initializing\n");
 #ifdef SHOW_RESULTS
     if (dr_is_notify_on()) {
@@ -319,7 +322,6 @@ event_exit()
     NULL_TERMINATE_BUFFER(msg);
     DISPLAY_STRING(msg);
 #endif /* SHOW_RESULTS */
-    code_cache_exit();
 
     if (!drmgr_unregister_tls_field(tls_index) ||
         !drmgr_unregister_thread_init_event(event_thread_init) ||
@@ -379,7 +381,7 @@ event_thread_exit(void *drcontext)
 {
     per_thread_t *data;
 
-    instrace(drcontext);
+    flush_saved_traces(drcontext);
     data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
     dr_mutex_lock(mutex);
     num_refs += data->num_refs;
@@ -404,22 +406,19 @@ event_thread_exit(void *drcontext)
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
 }
 
+static size_t get_thread_base() {
+    unsigned long addr;
+    int ret = syscall(SYS_arch_prctl, ARCH_GET_FS, &addr);
+    if (ret != 0) {
+        dr_fprintf(STDERR, "arch_prctl failed: %s\n", strerror(errno));
+        return -1;
+    }
+    return addr;
+}
+
 static void
 dump_mapped_memory()
 {
-    // dr_memory_dump_spec_t spec = { 0 };
-    // spec.flags = DR_MEMORY_DUMP_LDMP;
-    // spec.label = "dump_mapped_memory";
-    // // std::string fpath = logdir + "ldmp.bin";
-    // // spec.ldmp_path = fpath.c_str();
-    // char fpath[512] = { 0 };
-    // spec.ldmp_path = fpath;
-    // spec.ldmp_path_size = 512;
-    // if (dr_create_memory_dump(&spec)) {
-    //     dr_printf("Created dump at %s\n", spec.ldmp_path);
-    // } else {
-    //     dr_printf("Could not create memory dump\n");
-    // }
     void *drcontext = dr_get_current_drcontext();
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
@@ -496,16 +495,12 @@ dump_mapped_memory()
         }
         dr_close_file(f);
     }
-    // if (!dr_set_mcontext(drcontext, &mcontext)) {
-    //     dr_printf("dr_set_mcontext failed\n");
-    //     dr_abort();
-    // }
 }
 
 static void
 insert_save_memory(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc)
 {
-    dr_insert_clean_call(drcontext, ilist, where, (void *)call_save_memory, false,
+    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call_save_memory, false,
         // pass as argument the PC of the instruction
         1, OPND_CREATE_INTPTR(pc));
 }
@@ -513,37 +508,9 @@ insert_save_memory(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc p
 static void
 insert_save_context(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc)
 {
-    // reg_id_t reg1, reg2;
-    // drvector_t allowed;
-
-    // drreg_init_and_fill_vector(&allowed, false);
-    // drreg_set_vector_entry(&allowed, DR_REG_XCX, true);
-    // if (drreg_reserve_register(drcontext, ilist, where, &allowed, &reg2) !=
-    //         DRREG_SUCCESS ||
-    //     drreg_reserve_register(drcontext, ilist, where, NULL, &reg1) != DRREG_SUCCESS) {
-    //     DR_ASSERT(false); /* cannot recover */
-    //     drvector_delete(&allowed);
-    //     return;
-    // }
-    // drvector_delete(&allowed);
-    // if (drreg_get_app_value(drcontext, ilist, where, DR_REG_RCX, DR_REG_RCX) != DRREG_SUCCESS) {
-    //     dr_printf("drreg_get_app_value failed\n");
-    // }
-    // if (drreg_get_app_value(drcontext, ilist, where, DR_REG_RAX, DR_REG_RAX) != DRREG_SUCCESS) {
-    //     dr_printf("drreg_get_app_value failed\n");
-    // }
-
-    // if (!drreg_set_bb_properties(drcontext, DRREG_CONTAINS_SPANNING_CONTROL_FLOW)) {
-    //     dr_printf("drreg_set_bb_properties failed\n");
-    // }
-    // drreg_restore_app_values(drcontext, ilist, where, )
     dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call_save_context, false,
         // pass as argument the PC of the instruction
         1, OPND_CREATE_INTPTR(pc));
-    
-    // if (drreg_unreserve_register(drcontext, ilist, where, reg1) != DRREG_SUCCESS ||
-    //     drreg_unreserve_register(drcontext, ilist, where, reg2) != DRREG_SUCCESS)
-    //     DR_ASSERT(false);
 }
 
 
@@ -558,58 +525,22 @@ static dr_emit_flags_t
 event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
                 bool for_trace, bool translating, void *user_data)
 {
-
-    if (instr_get_app_pc(instr) == NULL || !instr_is_app(instr))
+    app_pc pc = instr_get_app_pc(instr);
+    if (pc == NULL || !instr_is_app(instr))
         return DR_EMIT_DEFAULT;
     
-    // start tracing at module entry point
-    if (!initial_state_recorded && instr_get_app_pc(instr) != main_entry_pc)
-        return DR_EMIT_DEFAULT;
-
-    // store state for first instr of application
-    if (!initial_state_recorded) {
+    // dump state at entry point
+    // DO NOT RETURN EARLY HERE. We still need to instrument every basic block
+    if (!initial_state_recorded && pc == main_entry_pc) {
         initial_state_recorded = true;
-        // dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_save_context, false,
-        //     // pass as argument the PC of the instruction
-        //     1, OPND_CREATE_INTPTR(-1));
+
         dr_insert_clean_call(drcontext, bb, instr, (void *)dump_mapped_memory, false,
-            // pass as argument the PC of the instruction
             0, NULL);
         insert_save_context(drcontext, bb, instr, (app_pc)-1);
-        // return DR_EMIT_DEFAULT;
     }
     
-    // instr_t *prev_app_instr = instr_get_prev_app(instr);
-    // if (prev_app_instr != NULL && instr_get_app_pc(prev_app_instr) != NULL && instr_is_app(prev_app_instr)) {
-    //     int opc = instr_get_opcode(prev_app_instr);
-    //     opnd_t op = instr_get_src(prev_app_instr, 0);
-    //     if (opc == OP_cpuid || opc == OP_xgetbv || opnd_get_segment(op) == DR_SEG_GS
-    //         || opc == OP_syscall || opc == OP_sysenter) { // || opc == OP_rep_stos) {
-    //         char buf[128];
-    //         instr_disassemble_to_buffer(drcontext, prev_app_instr, buf, 128);
-    //         dr_printf("context_save_instr %#zx %d %s\n", instr_get_app_pc(prev_app_instr), instr_count, buf);
-    //         instr_t *prev_instr = instr_get_next(prev_app_instr);
-    //         insert_save_context(drcontext, bb, prev_instr, instr_get_app_pc(prev_app_instr));
-    //         // dr_insert_clean_call(drcontext, bb, prev_instr, (void *)clean_call_save_context, false,
-    //         //     // pass as argument the PC of the instr
-    //         //     1, OPND_CREATE_INTPTR(instr_get_app_pc(prev_app_instr)));
-            
-    //         // if (!disassembled_once && opnd_get_segment(op) == DR_SEG_GS) {
-    //         //     disassembled_once = true;
-
-    //         //     std::string fname = logdir + "bb.disass";
-    //         //     file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
-    //         //     if (f == INVALID_FILE) {
-    //         //         dr_fprintf(STDERR, "Could not open file %s\n", fname.c_str());
-    //         //     } else {
-    //         //         dr_printf("Wrote disassembly to %s\n", fname.c_str());
-    //         //         instrlist_disassemble(drcontext, (app_pc)tag, bb, f);
-    //         //         dr_close_file(f);
-    //         //     }
-    //         // }
-    //         // return DR_EMIT_DEFAULT;
-    //     }
-    // }
+    // insert context/memory save call in case e.g. the last instruction was
+    // unsupported by the analysis tool
     if (context_save_instr_pc) {
         insert_save_context(drcontext, bb, instr, context_save_instr_pc);
         context_save_instr_pc = 0;
@@ -619,34 +550,39 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         memory_save_instr_pc = 0;
     }
 
+    // determine whether a context/memory save is required and signal it by
+    // setting context_save_instr_pc/memory_save_instr_pc to save the state
+    // after the current instruction
     int opc = instr_get_opcode(instr);
-    bool uses_gs_segment = false;
-    if (instr_num_srcs(instr) > 0) {
-        opnd_t op = instr_get_src(instr, 0);
-        uses_gs_segment = opnd_is_far_memory_reference(op) && opnd_get_segment(op) == DR_SEG_GS;
-    }
-    bool dbg_dump = false;//instr_get_app_pc(instr) == (app_pc)0x7ffccbb56e16;
-    if (opc == OP_cpuid || opc == OP_xgetbv || uses_gs_segment
+    bool dbg_dump = false; // pc == (app_pc)0x7ffccbb56e16;
+    if (opc == OP_cpuid || opc == OP_xgetbv //|| uses_tls_segment || writes_tls_segment
         || opc == OP_syscall || opc == OP_sysenter
         || opc == OP_rdtsc || opc == OP_rdtscp
         || opc == OP_rdrand
         || opc == OP_vpmovmskb
-        || dbg_dump) { // || opc == OP_rep_stos) {
+        || opc == OP_xsave32
+        || opc == OP_xrstor32
+        || opc == OP_pslld
+        || opc == OP_psllq
+        || dbg_dump) {
         char buf[128];
         instr_disassemble_to_buffer(drcontext, instr, buf, sizeof(buf));
-        context_save_instr_pc = instr_get_app_pc(instr);
-        memory_save_instr_pc = opc == OP_syscall || opc == OP_sysenter || dbg_dump ? context_save_instr_pc : 0;
+        context_save_instr_pc = pc;
+        memory_save_instr_pc = opc == OP_syscall || opc == OP_sysenter || instr_writes_memory(instr) || dbg_dump ? pc : 0;
         dr_printf("context%s_save_instr %#zx %d %s\n",
             memory_save_instr_pc != 0 ? "/memory" : "", context_save_instr_pc, instr_count, buf);
     }
 
-    instrument_instr(drcontext, bb, instr);
+    dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_trace, false,
+        // pass as argument the PC of the instruction
+        1, OPND_CREATE_INTPTR(pc));
+
     ++instr_count;
     return DR_EMIT_DEFAULT;
 }
 
 static void
-save_context(dr_mcontext_t *mcontext)
+save_context(void *drcontext, dr_mcontext_t *mcontext)
 {
     saved_context_t s;
     s.instr_num = global_instr_count - 1;
@@ -672,6 +608,13 @@ save_context(dr_mcontext_t *mcontext)
     s.xflags = mcontext->xflags;
 
     s.xip = (size_t)mcontext->xip;
+
+    dr_switch_to_app_state(drcontext);
+    size_t tb = get_thread_base();
+    // size_t tb_val = ((size_t*)tb)[0x28/sizeof(size_t)];
+    dr_switch_to_dr_state(drcontext);
+    // dr_printf("fs addr %#zx [0x28] = %#zx, rax = %#zx\n", tb, tb_val, mcontext->rax);
+    s.fs  = tb;
 
     saved_contexts.push_back(s);
 }
@@ -734,39 +677,64 @@ flush_saved_contexts()
 }
 
 static void
+flush_saved_traces(void *drcontext)
+{
+    per_thread_t *data;
+    int num_refs;
+    ins_ref_t *ins_ref;
+#ifdef OUTPUT_TEXT
+    int i;
+#endif
+
+    data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
+    ins_ref = (ins_ref_t *)data->buf_base;
+    num_refs = (int)((ins_ref_t *)data->buf_ptr - ins_ref);
+
+#ifdef OUTPUT_TEXT
+    /* We use libc's fprintf as it is buffered and much faster than dr_fprintf
+     * for repeated printing that dominates performance, as the printing does here.
+     */
+    for (i = 0; i < num_refs; i++) {
+        /* We use PIFX to avoid leading zeroes and shrink the resulting file. */
+        fprintf(data->logf, PIFX ",%s\n", (ptr_uint_t)ins_ref->pc,
+                decode_opcode_name(ins_ref->opcode));
+        ++ins_ref;
+    }
+#else
+    dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
+#endif
+
+    memset(data->buf_base, 0, MEM_BUF_SIZE);
+    data->num_refs += num_refs;
+    data->buf_ptr = data->buf_base;
+}
+
+static void
 clean_call_trace(size_t pc)
 {
+    // only record traces once the entry point has been reached
+    if (!initial_state_recorded)
+        return;
+
     per_thread_t *data;
 
     void *drcontext = dr_get_current_drcontext();
     data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
-    /* The following assembly performs the following instructions
-     * buf_ptr->pc = pc;
-     * buf_ptr->opcode = opcode;
-     * buf_ptr++;
-     * if (buf_ptr >= buf_end_ptr)
-     *    clean_call();
-     */
-    // dr_printf("data->buf_ptr %#zx = 1, data->buf_end %#zx\n", data->buf_ptr, -data->buf_end);
-    // size_t *addr_to_read = (size_t*)0x00007ffccbb9aff0;
-    // if (pc == (size_t)0x7ffccbb56e1c) {
-    //     dr_printf("%#018zx: monitored_addr: %#zx = %#zx\n", pc, addr_to_read, *addr_to_read);
-    // }
-
-    // if (global_instr_count == 0) {
-    //     dr_printf("%#018zx: monitored_addr: %#zx = %#zx\n", pc, addr_to_read, *addr_to_read);
-    // }
 
     global_instr_count += 1;
     *(size_t*)(data->buf_ptr) = pc;
     data->buf_ptr += sizeof(ins_ref_t);
     if ((size_t)data->buf_ptr >= (size_t)-data->buf_end)
-        clean_call();
+        flush_saved_traces(drcontext);
 }
 
 static void
-call_save_memory(size_t pc)
+clean_call_save_memory(size_t pc)
 {
+    // only save memory once the entry point has been reached
+    if (!initial_state_recorded)
+        return;
+
     void *drcontext = dr_get_current_drcontext();
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
@@ -785,7 +753,7 @@ call_save_memory(size_t pc)
         addr = mem_info.base_pc + mem_info.size;
         // only interested in data that can be written to since read only data should not change
         // if (mem_info.type != DR_MEMTYPE_DATA || mem_info.prot != (DR_MEMPROT_READ | DR_MEMPROT_WRITE) || dr_memory_is_dr_internal(addr))
-        if ((mem_info.prot & (DR_MEMPROT_GUARD | DR_MEMPROT_EXEC)) != 0 || (mem_info.prot & DR_MEMPROT_WRITE) == 0 || dr_memory_is_dr_internal(addr))
+        if ((mem_info.prot & (DR_MEMPROT_GUARD | DR_MEMPROT_EXEC | DR_MEMPROT_VDSO)) != 0 || (mem_info.prot & DR_MEMPROT_READ) == 0 || dr_memory_is_dr_internal(addr))
             continue;
         
         saved_memory_t saved_memory = { 0 };
@@ -825,231 +793,20 @@ call_save_memory(size_t pc)
 static void
 clean_call_save_context(size_t pc)
 {
-    // if (pc == -1) {
-    //     dump_mapped_memory();
-    // }
+    if (!initial_state_recorded)
+        return;
+
     void *drcontext = dr_get_current_drcontext();
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
     mcontext.flags = DR_MC_ALL;
     
     if (!dr_get_mcontext(drcontext, &mcontext)) {
-        dr_printf("dr_get_mcontext failed\n");
+        dr_printf("%s: dr_get_mcontext failed\n", __FUNCTION__);
         return;
     }
-    // size_t gs_val = 0;
-    // if (!reg_get_value_ex(DR_SEG_GS, &mcontext, (byte*)&gs_val)) {
-    //     dr_printf("get_reg_value_ex failed\n");
-    // } else {
-    //     dr_printf("gs_val %#zx\n", gs_val);
-    // }
+
+    // mcontext seems to contain a wrong value so set it manually
     mcontext.xip = (byte*)pc;
-    // TODO: seems to return the wrong value :(
-    // dr_printf("dump addr: %#zx, mcontext.rcx %#zx\n", pc, mcontext.rcx);
-    save_context(&mcontext);
-}
-
-static void
-instrace(void *drcontext)
-{
-    per_thread_t *data;
-    int num_refs;
-    ins_ref_t *ins_ref;
-#ifdef OUTPUT_TEXT
-    int i;
-#endif
-
-    data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
-    ins_ref = (ins_ref_t *)data->buf_base;
-    num_refs = (int)((ins_ref_t *)data->buf_ptr - ins_ref);
-
-#ifdef OUTPUT_TEXT
-    /* We use libc's fprintf as it is buffered and much faster than dr_fprintf
-     * for repeated printing that dominates performance, as the printing does here.
-     */
-    for (i = 0; i < num_refs; i++) {
-        /* We use PIFX to avoid leading zeroes and shrink the resulting file. */
-        fprintf(data->logf, PIFX ",%s\n", (ptr_uint_t)ins_ref->pc,
-                decode_opcode_name(ins_ref->opcode));
-        ++ins_ref;
-    }
-#else
-    dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
-#endif
-
-    memset(data->buf_base, 0, MEM_BUF_SIZE);
-    data->num_refs += num_refs;
-    data->buf_ptr = data->buf_base;
-}
-
-/* clean_call dumps the memory reference info to the log file */
-static void
-clean_call(void)
-{
-    // dr_printf("clean_call\n");
-    void *drcontext = dr_get_current_drcontext();
-    instrace(drcontext);
-}
-
-static void
-code_cache_init(void)
-{
-    void *drcontext;
-    instrlist_t *ilist;
-    instr_t *where;
-    byte *end;
-
-    drcontext = dr_get_current_drcontext();
-    code_cache =
-        (app_pc)dr_nonheap_alloc(page_size, DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC);
-    ilist = instrlist_create(drcontext);
-    /* The lean procecure simply performs a clean call, and then jumps back. */
-    /* Jump back to DR's code cache. */
-    where = INSTR_CREATE_jmp_ind(drcontext, opnd_create_reg(DR_REG_XCX));
-    instrlist_meta_append(ilist, where);
-    /* Clean call */
-    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call, false, 0);
-    /* Encode the instructions into memory and clean up. */
-    end = instrlist_encode(drcontext, ilist, code_cache, false);
-    DR_ASSERT((size_t)(end - code_cache) < page_size);
-    instrlist_clear_and_destroy(drcontext, ilist);
-    /* Set the memory as just +rx now. */
-    dr_memory_protect(code_cache, page_size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
-}
-
-static void
-code_cache_exit(void)
-{
-    dr_nonheap_free(code_cache, page_size);
-}
-
-/* instrument_instr is called whenever a memory reference is identified.
- * It inserts code before the memory reference to to fill the memory buffer
- * and jump to our own code cache to call the clean_call when the buffer is full.
- */
-static void
-instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where)
-{
-    app_pc pc = instr_get_app_pc(where);
-    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call_trace, false,
-        // pass as argument the PC of the instruction
-        1, OPND_CREATE_INTPTR(pc));
-
-    return;
-    instr_t *instr, *call, *restore;
-    opnd_t opnd1, opnd2;
-    reg_id_t reg1, reg2;
-    drvector_t allowed;
-    per_thread_t *data;
-    // app_pc pc;
-
-    data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
-
-    /* Steal two scratch registers.
-     * reg2 must be ECX or RCX for jecxz.
-     */
-    drreg_init_and_fill_vector(&allowed, false);
-    drreg_set_vector_entry(&allowed, DR_REG_XCX, true);
-    if (drreg_reserve_register(drcontext, ilist, where, &allowed, &reg2) !=
-            DRREG_SUCCESS ||
-        drreg_reserve_register(drcontext, ilist, where, NULL, &reg1) != DRREG_SUCCESS) {
-        DR_ASSERT(false); /* cannot recover */
-        drvector_delete(&allowed);
-        return;
-    }
-    drvector_delete(&allowed);
-
-    /* The following assembly performs the following instructions
-     * buf_ptr->pc = pc;
-     * buf_ptr->opcode = opcode;
-     * buf_ptr++;
-     * if (buf_ptr >= buf_end_ptr)
-     *    clean_call();
-     */
-    drmgr_insert_read_tls_field(drcontext, tls_index, ilist, where, reg2);
-    /* Load data->buf_ptr into reg2 */
-    opnd1 = opnd_create_reg(reg2);
-    opnd2 = OPND_CREATE_MEMPTR(reg2, offsetof(per_thread_t, buf_ptr));
-    instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* Store pc */
-    pc = instr_get_app_pc(where);
-    /* For 64-bit, we can't use a 64-bit immediate so we split pc into two halves.
-     * We could alternatively load it into reg1 and then store reg1.
-     * We use a convenience routine that does the two-step store for us.
-     */
-    opnd1 = OPND_CREATE_MEMPTR(reg2, offsetof(ins_ref_t, pc));
-    instrlist_insert_mov_immed_ptrsz(drcontext, (ptr_int_t)pc, opnd1, ilist, where, NULL,
-                                     NULL);
-
-    /* Store opcode */
-    opnd1 = OPND_CREATE_MEMPTR(reg2, offsetof(ins_ref_t, opcode));
-    opnd2 = OPND_CREATE_INT32(instr_get_opcode(where));
-    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* Increment reg value by pointer size using lea instr */
-    opnd1 = opnd_create_reg(reg2);
-    opnd2 = opnd_create_base_disp(reg2, DR_REG_NULL, 0, sizeof(ins_ref_t), OPSZ_lea);
-    instr = INSTR_CREATE_lea(drcontext, opnd1, opnd2);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* Update the data->buf_ptr */
-    drmgr_insert_read_tls_field(drcontext, tls_index, ilist, where, reg1);
-    opnd1 = OPND_CREATE_MEMPTR(reg1, offsetof(per_thread_t, buf_ptr));
-    opnd2 = opnd_create_reg(reg2);
-    instr = INSTR_CREATE_mov_st(drcontext, opnd1, opnd2);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* We use the lea + jecxz trick for better performance.
-     * lea and jecxz won't disturb the eflags, so we won't need
-     * code to save and restore the application's eflags.
-     */
-    /* lea [reg2 - buf_end] => reg2 */
-    opnd1 = opnd_create_reg(reg1);
-    opnd2 = OPND_CREATE_MEMPTR(reg1, offsetof(per_thread_t, buf_end));
-    instr = INSTR_CREATE_mov_ld(drcontext, opnd1, opnd2);
-    instrlist_meta_preinsert(ilist, where, instr);
-    opnd1 = opnd_create_reg(reg2);
-    opnd2 = opnd_create_base_disp(reg1, reg2, 1, 0, OPSZ_lea);
-    instr = INSTR_CREATE_lea(drcontext, opnd1, opnd2);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* jecxz call */
-    call = INSTR_CREATE_label(drcontext);
-    opnd1 = opnd_create_instr(call);
-    instr = INSTR_CREATE_jecxz(drcontext, opnd1);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* jump restore to skip clean call */
-    restore = INSTR_CREATE_label(drcontext);
-    opnd1 = opnd_create_instr(restore);
-    instr = INSTR_CREATE_jmp(drcontext, opnd1);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* clean call */
-    /* We jump to our generated lean procedure which performs a full context
-     * switch and clean call invocation. This is to reduce the code cache size.
-     */
-    instrlist_meta_preinsert(ilist, where, call);
-    /* mov restore DR_REG_XCX */
-    opnd1 = opnd_create_reg(reg2);
-    /* This is the return address for jumping back from the lean procedure. */
-    opnd2 = opnd_create_instr(restore);
-    /* We could use instrlist_insert_mov_instr_addr(), but with a register
-     * destination we know we can use a 64-bit immediate.
-     */
-    instr = INSTR_CREATE_mov_imm(drcontext, opnd1, opnd2);
-    instrlist_meta_preinsert(ilist, where, instr);
-    /* jmp code_cache */
-    opnd1 = opnd_create_pc(code_cache);
-    instr = INSTR_CREATE_jmp(drcontext, opnd1);
-    instrlist_meta_preinsert(ilist, where, instr);
-
-    /* Restore scratch registers */
-    instrlist_meta_preinsert(ilist, where, restore);
-    if (drreg_unreserve_register(drcontext, ilist, where, reg1) != DRREG_SUCCESS ||
-        drreg_unreserve_register(drcontext, ilist, where, reg2) != DRREG_SUCCESS)
-        DR_ASSERT(false);
+    save_context(drcontext, &mcontext);
 }
