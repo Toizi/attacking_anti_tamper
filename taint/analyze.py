@@ -1,3 +1,5 @@
+#!/usr/bin/env python2
+
 from __future__ import print_function
 import struct
 import re
@@ -18,10 +20,11 @@ except ImportError:
 
 DEBUG = True
 # MAIN_END = 0x1400038A8 # test_tamper_debug
-MAIN_END = 0x140001C6A # test_tamper
+# MAIN_END = 0x140001C6A # test_tamper
 # MAIN_END = 0x140001818 # test_medium
 # MAIN_END = 0x1400020B8 # test_large_debug
 # MAIN_END = 0x0001400012CA
+MAIN_END = 0x000000000040062a # test_tamper_no_relro
 
 def dprint(*args, **kargs):
     if DEBUG:
@@ -36,7 +39,7 @@ def p64(val):
 def set_triton_context(ctx, state, set_rip=False):
     print("[*] set_triton_context at {:#x}".format(ctx.getConcreteRegisterValue(ctx.registers.rip)))
     for reg in registers:
-        if reg == 'rflags' or not set_rip and (reg == 'rip' or reg == 'rsp'):
+        if reg == 'rflags' or not set_rip and reg == 'rip': #(reg == 'rip' or reg == 'rsp'):
             continue
         reg_val = getattr(state, reg)
         triton_reg = getattr(ctx.registers, reg)
@@ -63,7 +66,7 @@ def print_triton_memory_at_register(ctx, reg, size=0x40):
     print_triton_memory(ctx, reg_val - size, 2*size)
 
 
-skipped_opcodes = { OPCODE.X86.XGETBV, OPCODE.X86.RDTSCP, OPCODE.X86.RDRAND, OPCODE.X86.VPCMPEQB, OPCODE.X86.VPMOVMSKB, OPCODE.X86.VZEROUPPER }
+skipped_opcodes = { OPCODE.X86.XGETBV, OPCODE.X86.RDTSCP, OPCODE.X86.RDRAND, OPCODE.X86.VPCMPEQB, OPCODE.X86.VPMOVMSKB, OPCODE.X86.VZEROUPPER, OPCODE.X86.XSAVE, OPCODE.X86.XRSTOR, OPCODE.X86.PSLLD, OPCODE.X86.PSLLQ }
 def emulate(ctx, trace, saved_contexts, saved_memories):
     # type: (TritonContext, List[Trace], List[], List[]) -> Union[None, List[int, Instruction]]
     old_pc = 0
@@ -225,7 +228,8 @@ def get_modules(modules_path):
 registers = ['rdi', 'rsi', 'rbp', 'rsp', 'rbx', 'rdx', 'rcx', 'rax',
     'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
     'rflags',
-    'rip']
+    'rip',
+    'fs']
 
 class saved_context_t(cstruct.CStruct):
     __byte_order__ = cstruct.LITTLE_ENDIAN
