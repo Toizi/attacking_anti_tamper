@@ -57,11 +57,13 @@
 #include "drmgr.h"
 #include "drreg.h"
 #include "dr_tools.h"
-#include "droption.h"
+// #include "droption.h"
 #include "utils.h"
 
 #include <string>
 #include <sstream>
+#include <vector>
+#include <iomanip>
 
 #include <unistd.h>
 #include <asm/ldt.h>   
@@ -77,7 +79,7 @@ static std::string logdir = "";
 /* Each ins_ref_t describes an executed instruction. */
 typedef struct _ins_ref_t {
     app_pc pc;
-    int opcode;
+    // int opcode;
 } ins_ref_t;
 
 /* Max number of ins_ref a buffer can have */
@@ -93,12 +95,10 @@ typedef struct {
     char *buf_base;
     /* buf_end holds the negative value of real address of buffer end. */
     ptr_int_t buf_end;
-    void *cache;
     file_t log;
 #ifdef OUTPUT_TEXT
     FILE *logf;
 #endif
-    uint64 num_refs;
 } per_thread_t;
 
 typedef struct {
@@ -140,8 +140,6 @@ typedef struct {
 static size_t global_instr_count = 0;
 static size_t page_size;
 static client_id_t client_id;
-static void *mutex;     /* for multithread support */
-static uint64 num_refs; /* keep a global memory reference count */
 static int tls_index;
 static file_t saved_contexts_file = INVALID_FILE;
 static file_t saved_memories_file = INVALID_FILE;
@@ -166,7 +164,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
                 bool for_trace, bool translating, void *user_data);
 
 static void
-save_context(dr_mcontext_t*);
+save_context(void*, dr_mcontext_t*);
 static void
 flush_saved_memories();
 static void
@@ -178,11 +176,7 @@ clean_call_save_context(size_t);
 static void
 clean_call_trace(size_t);
 static void
-clean_call(void);
-static void
 flush_saved_traces(void *drcontext);
-static void
-instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where);
 
 
 DR_EXPORT void
@@ -226,7 +220,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     // TODO: set third option, drreg_options_t.conservative to false for better performance
     // set to true right now to turn off lazy restores of registers which leads to
     // wrong values in the save_context clean call
-    drreg_options_t ops = { sizeof(ops), 3, true };
+    drreg_options_t ops = { sizeof(ops), 3, false, NULL };
     /* Specify priority relative to other instrumentation operations: */
     drmgr_priority_t priority = { sizeof(priority), /* size of struct */
                                   "instrace",       /* name of our operation */
@@ -240,7 +234,6 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     if (!drmgr_init() || drreg_init(&ops) != DRREG_SUCCESS)
         DR_ASSERT(false);
     client_id = id;
-    mutex = dr_mutex_create();
     dr_register_exit_event(event_exit);
     if (!drmgr_register_thread_init_event(event_thread_init) ||
         !drmgr_register_thread_exit_event(event_thread_exit) ||
@@ -274,7 +267,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
 static void
 event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 {
-    // info->names
+    (void)drcontext;
     std::string name = dr_module_preferred_name(info);
     if (name.find("ntdll") == std::string::npos) {
         return;
@@ -331,7 +324,6 @@ event_exit()
         drreg_exit() != DRREG_SUCCESS)
         DR_ASSERT(false);
 
-    dr_mutex_destroy(mutex);
     drmgr_exit();
 }
 
@@ -353,7 +345,6 @@ event_thread_init(void *drcontext)
     data->buf_ptr = data->buf_base;
     /* set buf_end to be negative of address of buffer end for the lea later */
     data->buf_end = -(ptr_int_t)(data->buf_base + MEM_BUF_SIZE);
-    data->num_refs = 0;
 
     /* We're going to dump our data to a per-thread file.
      * On Windows we need an absolute path so we place it in
@@ -383,9 +374,6 @@ event_thread_exit(void *drcontext)
 
     flush_saved_traces(drcontext);
     data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
-    dr_mutex_lock(mutex);
-    num_refs += data->num_refs;
-    dr_mutex_unlock(mutex);
 
     // write mcontext structs
     flush_saved_contexts();
@@ -517,7 +505,6 @@ insert_save_context(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc 
 static app_pc context_save_instr_pc = 0;
 static app_pc memory_save_instr_pc = 0;
 static int instr_count = 0;
-static bool disassembled_once = false;
 /* event_bb_insert calls instrument_instr to instrument every
  * application memory reference.
  */
@@ -525,6 +512,8 @@ static dr_emit_flags_t
 event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
                 bool for_trace, bool translating, void *user_data)
 {
+    (void)user_data; (void)tag; (void)for_trace; (void)translating;
+
     app_pc pc = instr_get_app_pc(instr);
     if (pc == NULL || !instr_is_app(instr))
         return DR_EMIT_DEFAULT;
@@ -657,8 +646,6 @@ flush_saved_contexts()
     if (saved_contexts.empty())
         return;
 
-    size_t start_addr = (size_t)saved_contexts.data();
-    size_t end_addr = start_addr + (size_t)(saved_contexts.size() * sizeof(saved_contexts[0]));
     std::string fname = logdir + "saved_contexts.bin";
     if (saved_contexts_file == INVALID_FILE) {
         file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
@@ -680,17 +667,17 @@ static void
 flush_saved_traces(void *drcontext)
 {
     per_thread_t *data;
-    int num_refs;
     ins_ref_t *ins_ref;
 #ifdef OUTPUT_TEXT
     int i;
+    int num_refs;
 #endif
 
     data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
     ins_ref = (ins_ref_t *)data->buf_base;
-    num_refs = (int)((ins_ref_t *)data->buf_ptr - ins_ref);
 
 #ifdef OUTPUT_TEXT
+    num_refs = (int)((ins_ref_t *)data->buf_ptr - ins_ref);
     /* We use libc's fprintf as it is buffered and much faster than dr_fprintf
      * for repeated printing that dominates performance, as the printing does here.
      */
@@ -705,7 +692,6 @@ flush_saved_traces(void *drcontext)
 #endif
 
     memset(data->buf_base, 0, MEM_BUF_SIZE);
-    data->num_refs += num_refs;
     data->buf_ptr = data->buf_base;
 }
 
@@ -731,6 +717,7 @@ clean_call_trace(size_t pc)
 static void
 clean_call_save_memory(size_t pc)
 {
+    (void)pc;
     // only save memory once the entry point has been reached
     if (!initial_state_recorded)
         return;

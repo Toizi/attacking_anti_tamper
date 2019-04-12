@@ -302,11 +302,10 @@ def read_trace(fpath):
     with open(trace_path, 'rb') as f:
         raw_trace = f.read()
     trace = []
-    Trace = namedtuple('Trace', 'addr opcode')
-    for i in range(0, len(raw_trace), 16):
+    Trace = namedtuple('Trace', 'addr')
+    for i in range(0, len(raw_trace), 8):
         addr = struct.unpack('Q', raw_trace[i:i+8])[0]
-        opcode = raw_trace[i+8:i+16]
-        trace.append(Trace(addr, opcode))
+        trace.append(Trace(addr))
 
     return trace
 

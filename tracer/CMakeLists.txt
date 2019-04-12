@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.8)
 project(instrace VERSION 0.1 LANGUAGES C CXX)
 add_library(instrace_x86 SHARED instrace_x86.cpp utils.cpp)
+
+if (MSVC)
+
+else()
+  target_compile_options(instrace_x86 PRIVATE "-Werror" "-Wall" "-Wextra" "-Wno-missing-field-initializers")
+endif()
+
 find_package(DynamoRIO)
 if (NOT DynamoRIO_FOUND)
   message(FATAL_ERROR "DynamoRIO package required to build")
