@@ -1,3 +1,5 @@
+#!/usr/bin/env python2
+
 import os
 import sys
 import pickle
@@ -25,10 +27,12 @@ def l2h(l):
     '''converts list of byte-sized integers to str as hex representation'''
     return hexlify(l2b(l))
 
-def create_patch(fpath):
+def create_patch_from_path(fpath):
     with open(fpath, 'rb') as f:
         saved_insts = pickle.load(f)
+    return create_patch(saved_insts)
     
+def create_patch(saved_insts):
     ctx = TritonContext()
     ctx.setArchitecture(ARCH.X86_64)
 
@@ -42,16 +46,24 @@ def create_patch(fpath):
 
         # print('{0} '.format(tinst, inst.trace_next))
         if tinst.isBranch():
-            dest = tinst.getOperands()[0].getValue()
+            dest = tinst.getOperands()[0]
+            # skip indirect branches
+            if dest.getType() == OPERAND.REG:
+                continue
+            # extract target address
+            dest = dest.getValue()
+
+            print('{:#x}: inst.trace_next = {:x}'.format(inst.addr, inst.trace_next))
             if dest == inst.trace_next:
-                encoding, count = ks.asm('jmp {:#x}'.format(dest), tinst.getAddress())
+                asm_str = 'jmp {:#x}'.format(dest)
+                encoding, count = ks.asm(asm_str, tinst.getAddress())
                 # print('{} = {}'.format(tinst, l2h(encoding)))
                 if count > len(inst.opcode):
                     print('patch {} for {} is too big'.format(l2h(encoding), tinst))
                     return None
-                patches.append((tinst.getAddress(), l2b(encoding)))
+                patches.append((tinst.getAddress(), l2b(encoding), asm_str))
             else:
-                patches.append((tinst.getAddress(), len(inst.opcode) * '\x90'))
+                patches.append((tinst.getAddress(), len(inst.opcode) * '\x90', 'nop * {}'.format(len(inst.opcode))))
     return patches
 
 
@@ -61,7 +73,7 @@ def main():
     else:
         this_dir = os.path.dirname(__file__)
         input_path = os.path.join(this_dir, '../samples/instrace_logs/tainted_locs.bin')
-    patches = create_patch(input_path)
+    patches = create_patch_from_path(input_path)
     if patches is None:
         return
     
