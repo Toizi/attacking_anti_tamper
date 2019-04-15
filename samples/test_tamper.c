@@ -2,8 +2,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char org_serial[] = "this_be_da_serial";
-const char serial[] = "vjkq]`g]fc]qgpkcn";
+static char org_serial[] = "this_be_da_serial";
+char serial[] = "vjkq]`g]fc]qgpkcn";
 
 #pragma protect anti-tamper.on
 int check_input(const char *s) {
