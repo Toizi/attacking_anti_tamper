@@ -24,7 +24,8 @@ DEBUG = True
 # MAIN_END = 0x140001818 # test_medium
 # MAIN_END = 0x1400020B8 # test_large_debug
 # MAIN_END = 0x0001400012CA
-MAIN_END = 0x000000000040062a # test_tamper_no_relro
+# MAIN_END = 0x000000000040062a # test_tamper_no_relro
+MAIN_END = 0x400bac # test_tamper_sc
 
 def dprint(*args, **kargs):
     if DEBUG:
@@ -66,9 +67,12 @@ def print_triton_memory_at_register(ctx, reg, size=0x40):
     print_triton_memory(ctx, reg_val - size, 2*size)
 
 
-skipped_opcodes = { OPCODE.X86.XGETBV, OPCODE.X86.RDTSCP, OPCODE.X86.RDRAND, OPCODE.X86.VPCMPEQB, OPCODE.X86.VPMOVMSKB, OPCODE.X86.VZEROUPPER, OPCODE.X86.XSAVE, OPCODE.X86.XRSTOR, OPCODE.X86.PSLLD, OPCODE.X86.PSLLQ }
+skipped_opcodes = { OPCODE.X86.XGETBV, OPCODE.X86.RDTSCP, OPCODE.X86.RDRAND,
+    OPCODE.X86.VPCMPEQB, OPCODE.X86.VPMOVMSKB, OPCODE.X86.VZEROUPPER,
+    OPCODE.X86.XSAVE, OPCODE.X86.XRSTOR, OPCODE.X86.PSLLD, OPCODE.X86.PSLLQ,
+    OPCODE.X86.VMOVD, OPCODE.X86.VPXOR, OPCODE.X86.VPBROADCASTB }
 def emulate(ctx, trace, saved_contexts, saved_memories):
-    # type: (TritonContext, List[Trace], List[], List[]) -> Union[None, List[int, Instruction]]
+    # type: (TritonContext, List[Trace], List[], List[]) -> Union[None, Dict[int, SavedInstruction]]
     old_pc = 0
     pc = trace[0].addr
     set_triton_context(ctx, saved_contexts[0], set_rip=True)
@@ -170,11 +174,7 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
     return None
 
 
-def setup_triton(modules_path):
-
-    modules = get_modules(modules_path)    
-    if not modules:
-        return
+def setup_triton(modules):
 
     # context boilerplate
     ctx = TritonContext()
@@ -187,17 +187,22 @@ def setup_triton(modules_path):
     # ctx.setConcreteRegisterValue(ctx.registers.gs, 0x2b)
     # ctx.setConcreteRegisterValue(ctx.registers.fs, 0x53)
 
+    main_mem_tainted = False
     # set up modules
     for module in modules:
         with open(module.path, 'rb') as f:
             data = f.read()
             ctx.setConcreteMemoryAreaValue(module.start, data)
-            if module.start == 0x140001000:
+            if module.is_main:
                 print('[*] Tainting main module memory {:#x} - {:#x}'.format(module.start, module.end))
+                main_mem_tainted = True
                 taint_size = 64
                 for i in range(module.start, module.end, taint_size):
                     ctx.taintMemory(MemoryAccess(i, taint_size))
 
+    if not main_mem_tainted:
+        print("[-] No main module for tainting found")
+        return
     # ctx.concretizeAllMemory()
     # ctx.concretizeAllRegister()
 
@@ -211,17 +216,22 @@ def setup_triton(modules_path):
 def get_modules(modules_path):
     module_paths = glob(modules_path + '*')
     modules = []
-    Module = namedtuple('Module', 'start end name path')
-    mod_re = re.compile(r'0x(?P<start_addr>.*?)-0x(?P<end_addr>.*?)_(?P<name>.*?)$')
+    main_module = None
+    Module = namedtuple('Module', 'start end is_main name path')
+    mod_re = re.compile(r'0x(?P<start_addr>.*?)-0x(?P<end_addr>.*?)-(?P<is_main>main|other)_(?P<name>.*?)$')
     for module_path in module_paths:
         module = os.path.basename(module_path) 
         match = mod_re.match(module)
         if not match:
             print('[-] Could not match module name {} with {}'.format(module, mod_re.pattern))
             return None
-        modules.append(Module(start=int(match.group('start_addr'), base=16), path=module_path,
-            end=int(match.group('end_addr'), base=16), name=match.group('name')))
-    return modules
+        is_main_module = match.group('is_main') == 'main'
+        mod = Module(start=int(match.group('start_addr'), base=16), path=module_path,
+            end=int(match.group('end_addr'), base=16), name=match.group('name'), is_main=is_main_module)
+        if is_main_module:
+            main_module = mod
+        modules.append(mod)
+    return modules, main_module
 
 
 
@@ -344,12 +354,23 @@ def main():
     print('[+] read memories')
     sys.stdout.flush()
 
-    ctx = setup_triton(os.path.join(input_path, 'modules/'))
+    modules, main_module = get_modules(os.path.join(input_path, 'modules/'))    
+    if not modules:
+        return
+    print('[+] read modules')
+
+    ctx = setup_triton(modules)
+    if ctx is None:
+        return
     print('[+] setup triton context')
     sys.stdout.flush()
     tainted_locs = emulate(ctx, trace, saved_contexts, saved_memories)
     if tainted_locs is None:
         return
+
+    tainted_locs = {addr : inst for addr, inst in tainted_locs.items()
+        if main_module.start <= addr < main_module.end}
+    print('[*] Filtered tainted addresses to only contain main module locations')
     
     print('[+] Tainted addresses:')
     for addr in sorted(tainted_locs):

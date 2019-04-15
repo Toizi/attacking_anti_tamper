@@ -465,9 +465,16 @@ dump_mapped_memory()
         // ss << op_logdir.get_value() << '\\';
         ss << logdir << "modules" << PATHSEP;
         ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << start_addr;
-        ss << "-";
+        ss << '-';
         ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << end_addr;
-        ss << "_" << short_name;
+        ss << '-';
+        // mark main module
+        if (start_addr <= (size_t)main_entry_pc && (size_t)main_entry_pc < end_addr)
+            ss << "main";
+        else
+            ss << "other";
+        
+        ss << '_' << short_name;
         std::string fname { ss.str() };
         file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
         if (f == INVALID_FILE) {
@@ -553,6 +560,9 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         || opc == OP_xrstor32
         || opc == OP_pslld
         || opc == OP_psllq
+        || opc == OP_vmovd
+        || opc == OP_vpxor
+        || opc == OP_vpbroadcastb
         || dbg_dump) {
         char buf[128];
         instr_disassemble_to_buffer(drcontext, instr, buf, sizeof(buf));
