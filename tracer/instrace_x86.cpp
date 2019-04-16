@@ -174,6 +174,12 @@ clean_call_save_memory(size_t);
 static void
 clean_call_save_context(size_t);
 static void
+clean_call_xgetbv_callback(size_t pc);
+static void
+clean_call_cpuid_callback_before(size_t pc);
+static void
+clean_call_cpuid_callback_after(size_t pc);
+static void
 clean_call_trace(size_t);
 static void
 flush_saved_traces(void *drcontext);
@@ -511,6 +517,8 @@ insert_save_context(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc 
 
 static app_pc context_save_instr_pc = 0;
 static app_pc memory_save_instr_pc = 0;
+static app_pc xgetbv_instr_pc = 0;
+static app_pc cpuid_instr_pc = 0;
 static int instr_count = 0;
 /* event_bb_insert calls instrument_instr to instrument every
  * application memory reference.
@@ -545,6 +553,18 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         insert_save_memory(drcontext, bb, instr, memory_save_instr_pc);
         memory_save_instr_pc = 0;
     }
+    if (xgetbv_instr_pc) {
+        dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_xgetbv_callback, false,
+            // pass as argument the PC of the instruction
+            1, OPND_CREATE_INTPTR(pc));
+        xgetbv_instr_pc = 0;
+    }
+    if (cpuid_instr_pc) {
+        dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_cpuid_callback_after, false,
+            // pass as argument the PC of the instruction
+            1, OPND_CREATE_INTPTR(pc));
+        cpuid_instr_pc = 0;
+    }
 
     // determine whether a context/memory save is required and signal it by
     // setting context_save_instr_pc/memory_save_instr_pc to save the state
@@ -555,7 +575,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         || opc == OP_syscall || opc == OP_sysenter
         || opc == OP_rdtsc || opc == OP_rdtscp
         || opc == OP_rdrand
-        || opc == OP_vpmovmskb
+        // || opc == OP_vpmovmskb
         || opc == OP_xsave32
         || opc == OP_xrstor32
         || opc == OP_pslld
@@ -564,6 +584,14 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         || opc == OP_vpxor
         || opc == OP_vpbroadcastb
         || dbg_dump) {
+        if (opc == OP_xgetbv)
+            xgetbv_instr_pc = pc;
+        if (opc == OP_cpuid) {
+            dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_cpuid_callback_before, false,
+                // pass as argument the PC of the instruction
+                1, OPND_CREATE_INTPTR(pc));
+            cpuid_instr_pc = pc;
+        }
         char buf[128];
         instr_disassemble_to_buffer(drcontext, instr, buf, sizeof(buf));
         context_save_instr_pc = pc;
@@ -806,4 +834,73 @@ clean_call_save_context(size_t pc)
     // mcontext seems to contain a wrong value so set it manually
     mcontext.xip = (byte*)pc;
     save_context(drcontext, &mcontext);
+}
+
+static void
+clean_call_xgetbv_callback(size_t pc)
+{
+    // if (!initial_state_recorded)
+    //     return;
+
+    (void)pc;
+    void *drcontext = dr_get_current_drcontext();
+    dr_mcontext_t mcontext = { 0 };
+    mcontext.size = sizeof(dr_mcontext_t);
+    mcontext.flags = DR_MC_INTEGER;
+    
+    if (!dr_get_mcontext(drcontext, &mcontext)) {
+        dr_printf("%s: dr_get_mcontext failed\n", __FUNCTION__);
+        return;
+    }
+
+    if ((mcontext.rax & 0x6) == 0x6) {
+        dr_printf("eax & 0x6, removing bit\n");
+        mcontext.rax = mcontext.rax & ~0x6;
+        dr_set_mcontext(drcontext, &mcontext);
+    }
+}
+
+static uint32_t cpuid_eax_arg = 0;
+static void
+clean_call_cpuid_callback_before(size_t pc)
+{
+    (void)pc;
+    void *drcontext = dr_get_current_drcontext();
+    dr_mcontext_t mcontext = { 0 };
+    mcontext.size = sizeof(dr_mcontext_t);
+    mcontext.flags = DR_MC_INTEGER;
+    
+    if (!dr_get_mcontext(drcontext, &mcontext)) {
+        dr_printf("%s: dr_get_mcontext failed\n", __FUNCTION__);
+        return;
+    }
+
+    cpuid_eax_arg = (uint32_t)mcontext.rax;
+}
+
+#define SSE2_BIT (1 << 26)
+static void
+clean_call_cpuid_callback_after(size_t pc)
+{
+    (void)pc;
+    // if (!initial_state_recorded)
+    //     return;
+    if (cpuid_eax_arg != 1)
+        return;
+
+    void *drcontext = dr_get_current_drcontext();
+    dr_mcontext_t mcontext = { 0 };
+    mcontext.size = sizeof(dr_mcontext_t);
+    mcontext.flags = DR_MC_INTEGER;
+    
+    if (!dr_get_mcontext(drcontext, &mcontext)) {
+        dr_printf("%s: dr_get_mcontext failed\n", __FUNCTION__);
+        return;
+    }
+
+    if ((mcontext.rdx & SSE2_BIT) == SSE2_BIT) {
+        dr_printf("SSE2_BIT set, removing it\n");
+        mcontext.rdx = mcontext.rdx & ~SSE2_BIT;
+        dr_set_mcontext(drcontext, &mcontext);
+    }
 }
