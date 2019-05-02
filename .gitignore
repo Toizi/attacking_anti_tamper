@@ -4,3 +4,4 @@ DynamoRIO/
 DynamoRIO-Windows-7.1.0-1/
 DynamoRIO-Linux-7.1.0-1/
 .vscode/ipch
+*.pyc

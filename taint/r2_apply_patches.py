@@ -5,7 +5,7 @@ import os
 import shutil
 from binascii import hexlify
 
-def patch_program(fpath, data):
+def apply_patch(fpath, data):
     cmds = []
     for addr, bin_data, cmd_str in data:
         cmds.append('wx {} @ {:#x}'.format(hexlify(bin_data), addr))
@@ -15,8 +15,18 @@ def patch_program(fpath, data):
         r2.cmd(cmd)
     r2.quit()
 
+def patch_program(input_path, output_path, data):
+    try:
+        shutil.copyfile(input_path, output_path)
+    except IOError:
+        print('could not copy input file to {}'.format(output_path))
+        return False
+    apply_patch(output_path, data)
+    return True
+
+
 def main():
-    data = [(4196963, '\xeb\t', 'jmp 0x400a6e'), (4197392, '\xe9\x85\x00\x00\x00', 'jmp 0x400c9a'), (4196987, '\x90\x90', 'nop * 2')]
+    data = [(4199926, '\xeb\x15', 'jmp 0x40160d')]
     try:
         input_path = sys.argv[1]
         if not os.path.exists(input_path):
@@ -28,13 +38,8 @@ def main():
     
     in_path, ext = os.path.splitext(input_path)
     patched_path = '{}_patched{}'.format(in_path, ext)
-    try:
-        shutil.copyfile(input_path, patched_path)
-    except IOError:
-        print('could not copy input file to {}'.format(patched_path))
-        return 1
+    return patch_program(input_path, patched_path, data)
 
-    patch_program(patched_path, data)
 
 if __name__ == '__main__':
     main()

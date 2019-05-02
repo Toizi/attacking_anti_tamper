@@ -1,14 +1,8 @@
 #!/usr/bin/env python2
-
 from __future__ import print_function
 import struct
-import re
-import os
 import sys
-import cstruct
-import pickle
-from glob import glob
-from collections import namedtuple
+from run import registers, Trace, Module, saved_context_t, saved_memory_t
 from create_patch import SavedInstruction
 
 from triton import *
@@ -17,15 +11,19 @@ try:
 except ImportError:
     pass
 
-
-DEBUG = True
 # MAIN_END = 0x1400038A8 # test_tamper_debug
 # MAIN_END = 0x140001C6A # test_tamper
 # MAIN_END = 0x140001818 # test_medium
 # MAIN_END = 0x1400020B8 # test_large_debug
 # MAIN_END = 0x0001400012CA
 # MAIN_END = 0x000000000040062a # test_tamper_no_relro
-MAIN_END = 0x400bac # test_tamper_sc
+# MAIN_END = 0x400bac # test_tamper_sc
+# MAIN_END = 0
+
+DEBUG = False
+def set_debug(dbg):
+    global DEBUG
+    DEBUG = dbg
 
 def dprint(*args, **kargs):
     if DEBUG:
@@ -38,7 +36,7 @@ def p64(val):
     return struct.pack("Q", val)
 
 def set_triton_context(ctx, state, set_rip=False):
-    print("[*] set_triton_context at {:#x}".format(ctx.getConcreteRegisterValue(ctx.registers.rip)))
+    dprint("[*] set_triton_context at {:#x}".format(ctx.getConcreteRegisterValue(ctx.registers.rip)))
     for reg in registers:
         if reg == 'rflags' or not set_rip and reg == 'rip': #(reg == 'rip' or reg == 'rsp'):
             continue
@@ -68,7 +66,9 @@ def print_triton_memory_at_register(ctx, reg, size=0x40):
 
 
 skipped_opcodes = { OPCODE.X86.XGETBV, OPCODE.X86.RDTSCP, OPCODE.X86.RDRAND,
-    OPCODE.X86.VPCMPEQB, OPCODE.X86.VPMOVMSKB, OPCODE.X86.VZEROUPPER,
+    OPCODE.X86.VPCMPEQB,
+    # OPCODE.X86.VPMOVMSKB,
+    OPCODE.X86.VZEROUPPER,
     OPCODE.X86.XSAVE, OPCODE.X86.XRSTOR, OPCODE.X86.PSLLD, OPCODE.X86.PSLLQ,
     OPCODE.X86.VMOVD, OPCODE.X86.VPXOR, OPCODE.X86.VPBROADCASTB }
 def emulate(ctx, trace, saved_contexts, saved_memories):
@@ -77,14 +77,14 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
     pc = trace[0].addr
     set_triton_context(ctx, saved_contexts[0], set_rip=True)
 
-    print('[*] Trace length {}'.format(len(trace)))
+    print('[*] trace length {}'.format(len(trace)))
     next_saved_memory = 0
     next_saved_context = 1
-    print('[*] Starting emulation at {:#x}'.format(pc))
+    print('[*] starting emulation at {:#x}'.format(pc))
     count = 0
-    monitored_addr = 0x000000000034a000
-    monitored_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
-    print("[D] Monitored val start: {:#x}".format(u64(monitored_val)))
+    # monitored_addr = 0x000000000034a000
+    # monitored_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
+    # print("[D] Monitored val start: {:#x}".format(u64(monitored_val)))
     tainted_addrs = dict()
     while pc:
         opcodes = ctx.getConcreteMemoryAreaValue(pc, 16)
@@ -98,16 +98,16 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
             skip_inst = False
             if ctx.processing(inst) == False:
                 if inst.getType() in skipped_opcodes:
-                    print('skipping next inst')
+                    dprint('skipping next inst')
                     skip_inst = True
                 else:
-                    print('Instruction not supported: {}'.format(inst))
+                    print('instruction not supported: {}'.format(inst))
                     break
 
-            print("{0:07} {1} {2}".format(count, inst, 'tainted' if inst.isTainted() else ''))
+            dprint("{0:07} {1} {2}".format(count, inst, 'tainted' if inst.isTainted() else ''))
 
             if len(saved_contexts) > next_saved_context and count == saved_contexts[next_saved_context].instr_num:
-                print("[*] saved_context {}".format(next_saved_context))
+                dprint("[*] saved_context {}".format(next_saved_context))
                 if pc != saved_contexts[next_saved_context].rip:
                     print("[-] saved context wrong pc: {:#x} != {:#x}".format(pc, saved_contexts[next_saved_context].rip))
                     return
@@ -115,7 +115,7 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
                 next_saved_context += 1
             while len(saved_memories) > next_saved_memory and count == saved_memories[next_saved_memory].trace_addr:
                 saved_memory = saved_memories[next_saved_memory]
-                print("[*] saved_memory {}: {:#x} - {:#x}".format(next_saved_memory, saved_memory.start_addr, saved_memory.start_addr + saved_memory.size))
+                dprint("[*] saved_memory {}: {:#x} - {:#x}".format(next_saved_memory, saved_memory.start_addr, saved_memory.start_addr + saved_memory.size))
                 ctx.setConcreteMemoryAreaValue(saved_memory.start_addr, saved_memory.data.tobytes())
                 next_saved_memory += 1
 
@@ -150,8 +150,11 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
         #     print_triton_context(ctx)
         #     if pc == 0x7fff9e494224:
         #         print_triton_memory_at_register(ctx, "rax")
-        if pc == MAIN_END:
-            print('[+] Reached end of main {:#x}. Emulation done'.format(MAIN_END))
+        # if pc == MAIN_END:
+        #     print('[+] Reached end of main {:#x}. Emulation done'.format(MAIN_END))
+        #     return tainted_addrs
+        if len(trace) <= count:
+            print('[+] reached end of trace. stopping emulation')
             return tainted_addrs
 
 
@@ -162,13 +165,13 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
             for i in range(10):
                 print('{:#018x}'.format(trace[count+i].addr))
             # set_triton_context(ctx, saved_contexts[next_saved_context])
-            print('[D] monitored addr/value from last memory dump')
-            for saved_mem in reversed(saved_memories[:next_saved_memory-1]):
-                if saved_mem.contains_addr(monitored_addr):
-                    print('[D] {:#018x} : {:#x}'.format(monitored_addr, u64(saved_mem.get_value(monitored_addr))))
-                    break
-            print('[D] monitored addr/value currently')
-            print('[D] {:#018x} : {:#x}'.format(monitored_addr, u64(ctx.getConcreteMemoryAreaValue(monitored_addr, 8))))
+            # print('[D] monitored addr/value from last memory dump')
+            # for saved_mem in reversed(saved_memories[:next_saved_memory-1]):
+            #     if saved_mem.contains_addr(monitored_addr):
+            #         print('[D] {:#018x} : {:#x}'.format(monitored_addr, u64(saved_mem.get_value(monitored_addr))))
+            #         break
+            # print('[D] monitored addr/value currently')
+            # print('[D] {:#018x} : {:#x}'.format(monitored_addr, u64(ctx.getConcreteMemoryAreaValue(monitored_addr, 8))))
             break
 
     return None
@@ -212,176 +215,10 @@ def setup_triton(modules):
 
     return ctx
 
-
-def get_modules(modules_path):
-    module_paths = glob(modules_path + '*')
-    modules = []
-    main_module = None
-    Module = namedtuple('Module', 'start end is_main name path')
-    mod_re = re.compile(r'0x(?P<start_addr>.*?)-0x(?P<end_addr>.*?)-(?P<is_main>main|other)_(?P<name>.*?)$')
-    for module_path in module_paths:
-        module = os.path.basename(module_path) 
-        match = mod_re.match(module)
-        if not match:
-            print('[-] Could not match module name {} with {}'.format(module, mod_re.pattern))
-            return None
-        is_main_module = match.group('is_main') == 'main'
-        mod = Module(start=int(match.group('start_addr'), base=16), path=module_path,
-            end=int(match.group('end_addr'), base=16), name=match.group('name'), is_main=is_main_module)
-        if is_main_module:
-            main_module = mod
-        modules.append(mod)
-    return modules, main_module
-
-
-
-registers = ['rdi', 'rsi', 'rbp', 'rsp', 'rbx', 'rdx', 'rcx', 'rax',
-    'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
-    'rflags',
-    'rip',
-    'fs']
-
-class saved_context_t(cstruct.CStruct):
-    __byte_order__ = cstruct.LITTLE_ENDIAN
-    __struct__ = 'uint64_t instr_num;\n' + '\n'.join(['uint64_t {};'.format(reg) for reg in registers])
-
-def read_saved_contexts(fpath):
-    # (str) -> Union[None, List[saved_context_t]]
-    with open(fpath, 'rb') as f:
-        state_data = f.read()
-
-    state = saved_context_t()
-    state_len = len(state)
-    del state
-    states = []
-    for i in range(0, len(state_data), state_len):
-        s = saved_context_t()
-        s.unpack(state_data[i:i+state_len]) 
-        states.append(s)
-
-    return states
-
-class saved_memory_t():
-    struct_size = 4*8
-
-    def __init__(self):
-        self.trace_addr = -1
-        self.start_addr = -1
-        self.size = -1
-        self.data = None
-    
-    def unpack(self, data):
-        self.trace_addr, self.start_addr, self.size, _ = struct.unpack("QQQQ", data[:self.struct_size])
-        self.data = data[self.struct_size:self.struct_size + self.size]
-        consumed_bytes = self.struct_size + self.size
-        return consumed_bytes
-    
-    def contains_addr(self, addr):
-        return self.start_addr <= addr and (addr - self.start_addr) < self.size
-    
-    def get_value(self, addr):
-        data_start = addr - self.start_addr
-        return self.data[data_start:data_start + 8].tobytes()
-
-
-def read_saved_memories(fpath):
-    # (str) -> Union[None, List[saved_memory_t]]
-    with open(fpath, 'rb') as f:
-        memory_data = f.read()
-
-    view = memoryview(memory_data)
-    memories = []
-    cur_offset = 0
-    while cur_offset < len(view):
-        m = saved_memory_t()
-        consumed_bytes = m.unpack(view[cur_offset:]) 
-        cur_offset += consumed_bytes
-        memories.append(m)
-
-    return memories
-
-
-def read_trace(fpath):
-    # (str) -> Union[None, List[Tuple[int, int]]]
-    logs = glob(fpath + '*.log')
-    if not logs:
-        print("[-] Could not find log file at {}".format(fpath))
-        return None
-    trace_path = logs[0]
-    print('[*] Using trace file {}'.format(trace_path))
-    with open(trace_path, 'rb') as f:
-        raw_trace = f.read()
-    trace = []
-    Trace = namedtuple('Trace', 'addr')
-    for i in range(0, len(raw_trace), 8):
-        addr = struct.unpack('Q', raw_trace[i:i+8])[0]
-        trace.append(Trace(addr))
-
-    return trace
-
-
-def main():
-    if len(sys.argv) > 1:
-        input_path = sys.argv[1]
-    else:
-        this_dir = os.path.dirname(__file__)
-        input_path = os.path.join(this_dir, '../samples/instrace_logs/')
-    
-    if not os.path.exists(input_path):
-        print("[-] input path does not exists: {}".format(input_path))
-        exit(1)
-    print('[+] start reading')
-    sys.stdout.flush()
-
-    saved_contexts = read_saved_contexts(os.path.join(input_path, 'saved_contexts.bin'))
-    if not saved_contexts:
-        return
-    if saved_contexts[0].rip != (-1 & 0xffffffffffffffff):
-        print("[-] saved states do not have initial state with xip = -1")
-        return
-    print('[+] read saved contexts')
-    sys.stdout.flush()
-
-    trace = read_trace(input_path)
-    if not trace:
-        return
-    print('[+] read trace')
-    sys.stdout.flush()
-    
-    saved_memories = read_saved_memories(os.path.join(input_path, 'saved_memories.bin'))
-    if saved_memories is None:
-        return
-    print('[+] read memories')
-    sys.stdout.flush()
-
-    modules, main_module = get_modules(os.path.join(input_path, 'modules/'))    
-    if not modules:
-        return
-    print('[+] read modules')
-
-    ctx = setup_triton(modules)
-    if ctx is None:
-        return
-    print('[+] setup triton context')
-    sys.stdout.flush()
-    tainted_locs = emulate(ctx, trace, saved_contexts, saved_memories)
-    if tainted_locs is None:
-        return
-
-    tainted_locs = {addr : inst for addr, inst in tainted_locs.items()
-        if main_module.start <= addr < main_module.end}
-    print('[*] Filtered tainted addresses to only contain main module locations')
-    
-    print('[+] Tainted addresses:')
-    for addr in sorted(tainted_locs):
-        inst = tainted_locs[addr]
-        print('{:#018x}: {}'.format(addr, inst))
-    
-    tainted_loc_fpath = os.path.join(input_path, 'tainted_locs.bin')
-    print('[+] Saving tainted locations as {}'.format(tainted_loc_fpath))
-    with open(tainted_loc_fpath, 'wb') as f:
-        pickle.dump(tainted_locs.values(), f, pickle.HIGHEST_PROTOCOL)
+def main(argv):
+    print("This file is not meant to be run directly")
+    exit(1)
 
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1:])

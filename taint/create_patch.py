@@ -27,12 +27,12 @@ def l2h(l):
     '''converts list of byte-sized integers to str as hex representation'''
     return hexlify(l2b(l))
 
-def create_patch_from_path(fpath):
+def create_from_path(fpath):
     with open(fpath, 'rb') as f:
         saved_insts = pickle.load(f)
     return create_patch(saved_insts)
     
-def create_patch(saved_insts):
+def create(saved_insts):
     ctx = TritonContext()
     ctx.setArchitecture(ARCH.X86_64)
 
@@ -67,17 +67,17 @@ def create_patch(saved_insts):
     return patches
 
 
-def main():
-    if len(sys.argv) > 1:
-        input_path = sys.argv[1]
+def main(argv):
+    if len(argv) > 1:
+        input_path = argv[1]
     else:
         this_dir = os.path.dirname(__file__)
         input_path = os.path.join(this_dir, '../samples/instrace_logs/tainted_locs.bin')
-    patches = create_patch_from_path(input_path)
+    patches = create_from_path(input_path)
     if patches is None:
         return
     
     print(repr(patches))
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv)
