@@ -329,6 +329,7 @@ event_exit()
         !drmgr_unregister_module_load_event(event_module_load) ||
         drreg_exit() != DRREG_SUCCESS)
         DR_ASSERT(false);
+    dr_fprintf(STDERR, "tracer_run_success\n");
 
     drmgr_exit();
 }
@@ -578,8 +579,8 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         // || opc == OP_vpmovmskb
         || opc == OP_xsave32
         || opc == OP_xrstor32
-        || opc == OP_pslld
-        || opc == OP_psllq
+        // || opc == OP_pslld
+        // || opc == OP_psllq
         || opc == OP_vmovd
         || opc == OP_vpxor
         || opc == OP_vpbroadcastb

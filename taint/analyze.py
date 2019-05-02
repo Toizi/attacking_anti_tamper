@@ -2,8 +2,8 @@
 from __future__ import print_function
 import struct
 import sys
-from run import registers, Trace, Module, saved_context_t, saved_memory_t
-from create_patch import SavedInstruction
+from .run_taint import registers, Trace, Module, saved_context_t, saved_memory_t
+from .create_patch import SavedInstruction
 
 from triton import *
 try:

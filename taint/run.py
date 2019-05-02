@@ -1,5 +1,8 @@
 #!/usr/bin/env python2
 
+# run from parent dir:
+# python -m taint.run {args}
+
 from __future__ import print_function
 import struct
 import re
@@ -10,10 +13,11 @@ import pickle
 import argparse
 from glob import glob
 from collections import namedtuple
-import create_patch
-import r2_apply_patches
-import analyze
 from pprint import pprint
+
+from . import create_patch
+from . import r2_apply_patches
+from . import analyze
 
 
 Trace = namedtuple('Trace', 'addr')
