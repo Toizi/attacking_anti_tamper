@@ -154,8 +154,6 @@ def read_trace(fpath):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--compile", help="compile only and produce an object file",
-                        action="store_true")
     parser.add_argument("-v", "--verbose", help="print debugging information",
                         action="store_true")
     parser.add_argument("-o", "--output", help="output path", required=False)
@@ -183,43 +181,45 @@ def main(argv):
     if not os.path.exists(input_path):
         print("[-] input path does not exists: {}".format(input_path))
         return
-    print('[+] start reading')
-    sys.stdout.flush()
 
+    print('[*] reading saved contexts')
     saved_contexts = read_saved_contexts(os.path.join(input_path, 'saved_contexts.bin'))
     if not saved_contexts:
         return
     if saved_contexts[0].rip != (-1 & 0xffffffffffffffff):
         print("[-] saved states do not have initial state with xip = -1")
+        print('[-] read_saved_contexts')
         return
-    print('[+] read saved contexts')
-    sys.stdout.flush()
 
+    print('[*] reading trace')
     trace = read_trace(input_path)
     if not trace:
+        print('[-] read_trace')
         return
-    print('[+] read trace')
-    sys.stdout.flush()
     
+    print('[*] reading memories')
     saved_memories = read_saved_memories(os.path.join(input_path, 'saved_memories.bin'))
     if saved_memories is None:
+        print('[-] read_saved_memories')
         return
-    print('[+] read memories')
-    sys.stdout.flush()
 
+    print('[*] reading modules')
     modules, main_module = get_modules(os.path.join(input_path, 'modules/'))    
     if not modules:
+        print('[-] get_modules')
         return
-    print('[+] read modules')
 
+    print('[*] setting up triton context')
     analyze.set_debug(DEBUG)
     ctx = analyze.setup_triton(modules)
     if ctx is None:
+        print('[-] setup_triton')
         return
-    print('[+] setup triton context')
-    sys.stdout.flush()
+    
+    print('[*] running emulation')
     tainted_locs = analyze.emulate(ctx, trace, saved_contexts, saved_memories)
     if tainted_locs is None:
+        print('[-] emulate')
         return
 
     tainted_locs = {addr : inst for addr, inst in tainted_locs.items()
@@ -232,26 +232,27 @@ def main(argv):
         print('  {:#018x}'.format(addr))
     
     tainted_loc_fpath = os.path.join(input_path, 'tainted_locs.bin')
-    print('[+] saving tainted locations as {}'.format(tainted_loc_fpath))
+    print('[*] saving tainted locations as {}'.format(tainted_loc_fpath))
     with open(tainted_loc_fpath, 'wb') as f:
         pickle.dump(tainted_locs.values(), f, pickle.HIGHEST_PROTOCOL)
     
+    print('[*] creating patch')
     patches = create_patch.create(tainted_locs.values())
     if not patches:
-        print('[-] created patch failed')
+        print('[-] create_patch failed')
         return
-    print('[+] created patch')
-    pprint(patches)
+    print('[*] patches: {}'.format(patches))
 
     if not args.binary:
         print('[*] no input binary specified. will not apply patch')
         return True
 
-    print('[+] applying patches\n {} => {}'.format(args.binary, args.output))
+    print('[*] applying patches\n {} => {}'.format(args.binary, args.output))
     if not r2_apply_patches.patch_program(args.binary, args.output, patches):
         print('[-] r2_apply_patches failed')
         return
 
+    print('[+] taint.run success')
     return True
 
 

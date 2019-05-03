@@ -53,7 +53,7 @@ def create(saved_insts):
             # extract target address
             dest = dest.getValue()
 
-            print('{:#x}: inst.trace_next = {:x}'.format(inst.addr, inst.trace_next))
+            # print('{:#x}: inst.trace_next = {:x}'.format(inst.addr, inst.trace_next))
             if dest == inst.trace_next:
                 asm_str = 'jmp {:#x}'.format(dest)
                 encoding, count = ks.asm(asm_str, tinst.getAddress())

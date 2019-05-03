@@ -486,7 +486,7 @@ dump_mapped_memory()
         file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
         if (f == INVALID_FILE) {
             dr_fprintf(STDERR, "Could not open file %s\n", fname.c_str());
-            break;
+            dr_abort();
         }
         size_t buf_size = end_addr - start_addr;
         dr_switch_to_app_state(drcontext);

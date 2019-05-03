@@ -8,6 +8,7 @@ import shlex
 import time
 
 from taint.run import main as taint_main
+from taint.r2_apply_patches import crack_function
 
 def parse_args(argv):
     parser = argparse.ArgumentParser()
@@ -17,13 +18,14 @@ def parse_args(argv):
     parser.add_argument("-i", "--input",
         help="message that will be supplied to stdin of the binary when run",
         required=False)
+    parser.add_argument("-c", "--crack-function", type=str)
     parser.add_argument("input_file")
     
     args = parser.parse_args(argv)
 
     if not args.output:
         fname, ext = os.path.splitext(args.input_file)
-        args.output = '{}_cracked{}'.format(fname, ext)
+        args.output = '{}_patched{}'.format(fname, ext)
 
     return args
 
@@ -41,9 +43,9 @@ def run_cmd(cmd):
         return False
     return True
 
-def run_tracer(input_file, build_dir, input_msg):
-    log_dir = os.path.join(build_dir, 'instrace_logs')
+def run_tracer(input_file, build_dir, input_msg, log_dir):
     os.mkdir(log_dir)
+    os.mkdir(os.path.join(log_dir, 'modules'))
     cmd = '"{tracer}" -logdir {logdir} -- "{binary}"'.format(
         tracer=TRACER_PATH,
         logdir=log_dir,
@@ -70,12 +72,32 @@ def run_tracer(input_file, build_dir, input_msg):
         print(stderr_data)
     return success
 
+def run_taint_attack(input_file, build_dir, output_file, log_dir):
+    cmd = '"{log_dir}" --binary "{binary}" --output "{out}"'.format(
+        log_dir=log_dir,
+        binary=input_file,
+        out=output_file)
+    return taint_main(shlex.split(cmd))
+
 def run(args, build_dir):
-    if args.verbose:
-        print('[*] run_tracer')
-    if not run_tracer(args.input_file, build_dir, args.input):
+    log_dir = os.path.join(build_dir, 'instrace_logs')
+
+    print('[*] run_tracer')
+    if not run_tracer(args.input_file, build_dir, args.input, log_dir):
         print('[-] run_tracer')
         return False
+
+    print('[*] run_taint_attack')
+    if not run_taint_attack(args.input_file, build_dir, args.output, log_dir):
+        print('[-] run_taint_attack')
+        return False
+    
+    if args.crack_function:
+        print('[*] crack_function')
+        if not crack_function(args.output, args.crack_function):
+            print('[-] crack_function')
+            return False
+        
     return True
 
 def main(argv):
@@ -83,11 +105,13 @@ def main(argv):
     if not setup_environment():
         return False
     build_dir  = tempfile.mkdtemp()
-    run(args, build_dir)
+    success = run(args, build_dir)
 
     if args.verbose:
-        print('Done')
-        print('Intermediate results in\n{}'.format(build_dir))
+        print('[*] intermediate results: {}'.format(build_dir))
+        print('[{}] Done, {}'.format(
+            success and '+' or '-',
+            success and 'success' or 'failed'))
     return True
 
 if __name__ == '__main__':
