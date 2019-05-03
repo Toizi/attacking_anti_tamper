@@ -3,6 +3,7 @@ import r2pipe
 import sys
 import os
 import shutil
+import argparse
 from binascii import hexlify
 
 def apply_patch(fpath, data):
@@ -24,22 +25,49 @@ def patch_program(input_path, output_path, data):
     apply_patch(output_path, data)
     return True
 
+def crack_function(input_path, fname):
+    r2 = r2pipe.open(input_path, ['-w'])
+    r2.cmd('aa')
+    funcs = r2.cmdj('aflj')
+    fnames = [func['name'] for func in funcs]
+    r2_fname = 'sym.{}'.format(fname)
+    if r2_fname not in fnames:
+        print('function {} not in list of functions {}'.format(r2_fname, fnames))
+        return False
+    r2.cmd('"wa xor eax, eax; ret" @ {}'.format(r2_fname))
+    r2.quit()
+    return True
 
-def main():
-    data = [(4199926, '\xeb\x15', 'jmp 0x40160d')]
-    try:
-        input_path = sys.argv[1]
-        if not os.path.exists(input_path):
-            print('input path invalid')
-            return 1
-    except IndexError:
-        print('usage: {} path_to_program'.format(__file__))
-        return 1
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--verbose", help="print debugging information",
+                        action="store_true")
+    parser.add_argument("-cf", "--crack-function", help="function to crack",
+                        required=True)
+    parser.add_argument("-o", "--output", help="output path", required=False)
+    parser.add_argument("input_file", type=str)
+
+    args = parser.parse_args(argv)
+
+    # create output dir from input dir if no output was specified
+    if not args.output:
+        inpath, inext = os.path.splitext(os.path.abspath(args.input_file))
+        args.output = os.path.join(inpath + '_cracked' + inext)
+
+    return args
+
+def main(argv):
+    args = parse_args(argv)
     
-    in_path, ext = os.path.splitext(input_path)
-    patched_path = '{}_patched{}'.format(in_path, ext)
-    return patch_program(input_path, patched_path, data)
+    try:
+        shutil.copyfile(args.input_file, args.output)
+    except IOError:
+        print('could not copy input file to {}'.format(args.output))
+        return False
+
+    return crack_function(args.output, args.crack_function)
 
 
 if __name__ == '__main__':
-    main()
+    main(os.sys.argv[1:])
