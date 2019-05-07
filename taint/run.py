@@ -237,7 +237,7 @@ def main(argv):
         pickle.dump(tainted_locs.values(), f, pickle.HIGHEST_PROTOCOL)
     
     print('[*] creating patch')
-    patches = create_patch.create(tainted_locs.values())
+    patches = create_patch.create(tainted_locs.values(), DEBUG)
     if not patches:
         print('[-] create_patch failed')
         return

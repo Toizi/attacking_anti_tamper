@@ -202,6 +202,10 @@ def setup_triton(modules):
                 taint_size = 64
                 for i in range(module.start, module.end, taint_size):
                     ctx.taintMemory(MemoryAccess(i, taint_size))
+    
+    # print('[DDD] TESTING. REMOVE LATER')
+    # for i in range(0, 515):
+    #     ctx.taintMemory(MemoryAccess(0x603080, 1))
 
     if not main_mem_tainted:
         print("[-] No main module for tainting found")

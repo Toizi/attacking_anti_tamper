@@ -3,6 +3,7 @@
 import os
 import sys
 import pickle
+import argparse
 from keystone import *
 from binascii import hexlify
 
@@ -27,12 +28,12 @@ def l2h(l):
     '''converts list of byte-sized integers to str as hex representation'''
     return hexlify(l2b(l))
 
-def create_from_path(fpath):
+def create_from_path(fpath, dbg_output):
     with open(fpath, 'rb') as f:
         saved_insts = pickle.load(f)
-    return create_patch(saved_insts)
+    return create(saved_insts, dbg_output)
     
-def create(saved_insts):
+def create(saved_insts, dbg_output):
     ctx = TritonContext()
     ctx.setArchitecture(ARCH.X86_64)
 
@@ -44,7 +45,8 @@ def create(saved_insts):
         tinst.setAddress(inst.addr)
         ctx.processing(tinst)
 
-        # print('{0} '.format(tinst, inst.trace_next))
+        if dbg_output:
+            print('{0: <60} => {1:#x}'.format(tinst, inst.trace_next))
         if tinst.isBranch():
             dest = tinst.getOperands()[0]
             # skip indirect branches
@@ -53,7 +55,8 @@ def create(saved_insts):
             # extract target address
             dest = dest.getValue()
 
-            # print('{:#x}: inst.trace_next = {:x}'.format(inst.addr, inst.trace_next))
+            if dbg_output:
+                print('  is branch')
             if dest == inst.trace_next:
                 asm_str = 'jmp {:#x}'.format(dest)
                 encoding, count = ks.asm(asm_str, tinst.getAddress())
@@ -67,17 +70,32 @@ def create(saved_insts):
     return patches
 
 
-def main(argv):
-    if len(argv) > 1:
-        input_path = argv[1]
-    else:
-        this_dir = os.path.dirname(__file__)
-        input_path = os.path.join(this_dir, '../samples/instrace_logs/tainted_locs.bin')
-    patches = create_from_path(input_path)
-    if patches is None:
-        return
+def parse_args(argv):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-v", "--verbose", help="print debugging information",
+        action="store_true")
+    parser.add_argument("-o", "--output",
+        help="output path of the patch data, stdout if empty",
+        required=False)
+    parser.add_argument("tainted_locations_path", type=str,
+        help="path to tainted_locs.bin created by taint analysis")
     
-    print(repr(patches))
+    args = parser.parse_args(argv)
+
+    return args
+
+def main(argv):
+    args = parse_args(argv)
+    patches = create_from_path(args.tainted_locations_path, args.verbose is True)
+    if patches is None:
+        return False
+    
+    if not args.output:
+        print(repr(patches))
+    else:
+        with open(args.output, 'w') as f:
+            f.write(repr(patches))
+    return True
 
 if __name__ == '__main__':
-    main(sys.argv)
+    main(sys.argv[1:])
