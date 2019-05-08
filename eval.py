@@ -32,7 +32,7 @@ class Obfuscation:
         self.options_str = '-'.join(self.options)
         self.build_path = os.path.join(base_build_path, self.options_str)
         self.original_path = '{}+{}'.format(base_path, self.options_str)
-        self.report_path = os.path.join(self.build_path, 'times.json')
+        self.report_path = os.path.join(self.build_path, 'report.json')
         self.cracked_path = os.path.join(self.build_path, 'bin_cracked')
         self.patched_path = os.path.join(self.build_path, 'bin_patched_cracked')
         self.log_path = os.path.join(self.build_path, 'log.txt')
@@ -57,6 +57,12 @@ def parse_args(argv):
         required=False)
     parser.add_argument("--crack-function", type=str, required=True,
         help="name of the function that will be cracked to check for successful patching")
+    dbg_group = parser.add_mutually_exclusive_group()
+    dbg_group.add_argument("--print-only", action="store_true",
+        help="only create required tmp dirs and print the commands to run")
+    dbg_group.add_argument("--analyze-dir", type=str,
+        help="if supplied, don't create directories or run any commands, " +\
+            "only read reports from existing directory and create consolidated report")
     parser.add_argument("input_dir", type=str)
 
     args = parser.parse_args(argv)
@@ -105,6 +111,9 @@ def get_samples(input_dir, build_dir):
     return samples
 
 def run_sample(args, sample):
+    if args.analyze_dir:
+        return True
+
     # create build dir for sample
     os.mkdir(sample.build_path)
     for obfuscation in sample.obfuscations:
@@ -113,10 +122,11 @@ def run_sample(args, sample):
         # create symlink for easier debugging
         os.symlink(os.path.abspath(obfuscation.original_path), os.path.join(obfuscation.build_path, 'bin'))
 
+        # run the taint attack to patch and crack the binary
         input_str = '' if not args.input else '--input {}'.format(args.input)
         cmd = [ RUN_PATH,
             "--crack-function", args.crack_function,
-            "--report-time", obfuscation.report_path,
+            "--report-path", obfuscation.report_path,
             "-o", obfuscation.patched_path,
             "--crack-only-output", obfuscation.cracked_path,
             "--build-dir", obfuscation.build_path,
@@ -124,53 +134,54 @@ def run_sample(args, sample):
         ]
         if input_str:
             cmd.append(input_str)
-        if args.verbose:
+        if args.verbose or args.print_only:
             print("running {} > {}".format(' '.join(cmd), obfuscation.log_path))
+            if args.print_only:
+                continue
         with open(obfuscation.log_path, 'w') as log:
             success = run_cmd(cmd, log)
             if not success:
                 print('[-] error running cmd {}, see {} for output'.format(cmd, obfuscation.log_path))
                 return False
+    return True
+
     
+def get_sample_report(args, sample):
     reports = dict()
     for obfuscation in sample.obfuscations:
         with open(obfuscation.report_path, 'r') as f:
             reports[obfuscation.options_str] = json.load(f)
+            reports[obfuscation.options_str]['build_path'] = obfuscation.build_path
     
     return reports
 
 
-def get_overhead(base, relative):
-    return relative/base
-
 def analyze_reports(args, reports):
     # dict{ obf_str => List{ Analysis } }
-    relative_times = dict()
+    result = dict()
     for sample, sample_report in reports:
         # sample_report: dict{ obf_str => dict(times) }
         ref_report = sample_report['none']
-        for obf_str, times in sample_report.items():
-            # times: dict{ exec_id => exec_time }
+        for obf_str, report in sample_report.items():
+            # report: dict{ exec_id => exec_time }
             if obf_str == 'none':
                 continue
 
-            # for exec_id, exec_time in times.items():
-            # analysis = Analysis(sample.base_path,
-            #     get_overhead(ref_report['execution'], times['execution']),
-            #     get_overhead(ref_report['tracer'], times['tracer']),
-            #     get_overhead(ref_report['taint'], times['taint']))
             analysis = {
-                'sample_base' : sample.base_path
+                'sample_base'          : sample.base_path,
+                'build_path'           : report.get('build_path'),
+                'attack_result'        : report.get('attack_result'),
+                'self_check_triggered' : report.get('self_check_triggered'),
             }
             for val in analysis_values:
-                analysis[val] = times[val]
-                analysis[val + '_rel_overhead'] = times[val] / ref_report[val]
-                analysis[val + '_abs_overhead'] = times[val] - ref_report[val]
+                analysis[val] = report.get(val)
+                analysis[val + '_rel_overhead'] = report.get(val) / ref_report[val]
+                analysis[val + '_abs_overhead'] = report.get(val) - ref_report[val]
 
-            time_list = relative_times.get(obf_str, list())
+            time_list = result.get(obf_str, list())
             time_list.append(analysis)
-            relative_times[obf_str] = time_list
-    return relative_times
+            result[obf_str] = time_list
+    return result
 
 
 def run(args, build_dir):
@@ -189,11 +200,17 @@ def run(args, build_dir):
     print('[*] run_samples')
     reports = []
     for sample in samples:
-        report = run_sample(args, sample)
-        if not report:
+        run_success = run_sample(args, sample)
+        if args.print_only:
+            continue
+        if not run_success:
             print('[-] run_sample')
             return False
+        report = get_sample_report(args, sample)
         reports.append((sample, report))
+    if args.print_only:
+        print('[*] print_only mode. exiting')
+        return True
         
     print('[*] analyze_reports')
     analysis = analyze_reports(args, reports)
@@ -215,7 +232,7 @@ def main(argv):
     if not setup_environment():
         return False
 
-    build_dir  = tempfile.mkdtemp()
+    build_dir  = tempfile.mkdtemp() if args.analyze_dir is None else args.analyze_dir
     success = run(args, build_dir)
 
     print('[*] intermediate results: {}'.format(build_dir))
