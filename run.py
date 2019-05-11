@@ -108,7 +108,7 @@ def run_tracer(input_file, input_msg, log_dir):
     return success
 
 def run_taint_attack(input_file, build_dir, output_file, log_dir):
-    cmd = '"{log_dir}" --binary "{binary}" --output "{out}"'.format(
+    cmd = '"{log_dir}" --binary "{binary}" --output "{out}" -v'.format(
         log_dir=log_dir,
         binary=input_file,
         out=output_file)
@@ -117,7 +117,7 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir):
 def check_patch_success(crack_only_path, patched_path, input_msg, report_dict):
     # run binary that has been cracked but not patched to see if self-checking
     # triggers
-    os.chmod(crack_only_path, stat.S_IEXEC)
+    os.chmod(crack_only_path, 0766)
     ret = run_binary(crack_only_path, input_msg)
     if ret is False:
         print('[-] error running crack_only_path')
@@ -126,7 +126,7 @@ def check_patch_success(crack_only_path, patched_path, input_msg, report_dict):
     report_dict['self_check_triggered'] = 'Tampered binary!' in ret[0]
 
     # run the patched and cracked version to make sure no self-checking triggers
-    os.chmod(patched_path, stat.S_IEXEC)
+    os.chmod(patched_path, 0766)
     ret = run_binary(patched_path, input_msg)
     if ret is False:
         print('[-] error running patched_path')
