@@ -219,8 +219,10 @@ def run(args, build_dir):
         return False
     
     if args.output:
+        if args.verbose:
+            print('[*] creating report {}'.format(args.output))
         with open(args.output, 'w') as f:
-            json.dump(analysis)
+            json.dump(analysis, f, indent=2)
     else:
         pprint(analysis)
     
