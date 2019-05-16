@@ -74,7 +74,7 @@ skipped_opcodes = { OPCODE.X86.XGETBV, OPCODE.X86.RDTSCP, OPCODE.X86.RDRAND,
 def emulate(ctx, trace, saved_contexts, saved_memories):
     # type: (TritonContext, List[Trace], List[], List[]) -> Union[None, Dict[int, SavedInstruction]]
     old_pc = 0
-    pc = trace[0].addr
+    pc = trace[0]
     set_triton_context(ctx, saved_contexts[0], set_rip=True)
 
     print('[*] trace length {}'.format(len(trace)))
@@ -129,7 +129,8 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
 
         if inst.isTainted():
             tainted_addrs[inst.getAddress()] = SavedInstruction(ctx, inst)
-
+            print(len(tainted_addrs))
+            sys.stdout.flush()
 
         # cur_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
         # if cur_val != monitored_val:
@@ -158,12 +159,12 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
             return tainted_addrs
 
 
-        if pc != trace[count].addr:
-            print('[-] Execution diverged at {:#x}, trace {:#x}'.format(pc, trace[count].addr))
+        if pc != trace[count]:
+            print('[-] Execution diverged at {:#x}, trace {:#x}'.format(pc, trace[count]))
             print_triton_context(ctx)
             print('[*] Next trace instr')
             for i in range(10):
-                print('{:#018x}'.format(trace[count+i].addr))
+                print('{:#018x}'.format(trace[count+i]))
             # set_triton_context(ctx, saved_contexts[next_saved_context])
             # print('[D] monitored addr/value from last memory dump')
             # for saved_mem in reversed(saved_memories[:next_saved_memory-1]):

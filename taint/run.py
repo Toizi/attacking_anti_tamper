@@ -144,10 +144,10 @@ def read_trace(fpath):
     print('[*] using trace file {}'.format(trace_path))
     with open(trace_path, 'rb') as f:
         raw_trace = f.read()
-    trace = []
-    for i in range(0, len(raw_trace), 8):
+    trace = [0] * (len(raw_trace) // 8)
+    for num, i in enumerate(range(0, len(raw_trace), 8)):
         addr = struct.unpack('Q', raw_trace[i:i+8])[0]
-        trace.append(Trace(addr))
+        trace[num] = addr
 
     return trace
 

@@ -86,11 +86,20 @@ def run_tracer(input_file, input_msg, log_dir):
         logdir=log_dir,
         binary=input_file)
     
-    proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE)
+    try:
+        proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
 
-    stdout_data, stderr_data = proc.communicate(input=input_msg)
+        stdout_data, stderr_data = proc.communicate(input=input_msg)
+    except OSError:
+        traceback.print_exc()
+        print('error running command:\n"{}"'.format(cmd))
+        raise
+    except subprocess.CalledProcessError:
+        traceback.print_exc()
+        print('error running command:\n"{}"'.format(cmd))
+        raise
     # terminated = False
     # while True:
     #     if proc.poll():
@@ -197,6 +206,11 @@ def run(args, build_dir, track_time, report_dict):
     return True
 
 def main(argv):
+    # workaround for mperf bug where __file__ is not set
+    # if 'run.py' not in __file__:
+    #     global __file__
+    #     __file__ = os.path.join(os.getcwd(), 'run.py')
+
     args = parse_args(argv)
     if not setup_environment():
         return False
