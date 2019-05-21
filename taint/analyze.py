@@ -129,7 +129,6 @@ def emulate(ctx, trace, saved_contexts, saved_memories):
 
         if inst.isTainted():
             tainted_addrs[inst.getAddress()] = SavedInstruction(ctx, inst)
-            print(len(tainted_addrs))
             sys.stdout.flush()
 
         # cur_val = ctx.getConcreteMemoryAreaValue(monitored_addr, 8)
