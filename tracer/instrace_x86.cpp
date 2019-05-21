@@ -145,6 +145,7 @@ static file_t saved_contexts_file = INVALID_FILE;
 static file_t saved_memories_file = INVALID_FILE;
 static std::vector<saved_context_t> saved_contexts;
 static std::vector<saved_memory_t> saved_memories;
+static std::vector<std::string> saved_module_names;
 static bool initial_state_recorded = false;
 static size_t saved_stack_start = -1;
 static size_t saved_stack_end = -1;
@@ -169,6 +170,8 @@ static void
 flush_saved_memories();
 static void
 flush_saved_contexts();
+static void
+flush_saved_modules();
 static void
 clean_call_save_memory(size_t);
 static void
@@ -358,16 +361,22 @@ event_thread_init(void *drcontext)
      * the same directory as our library. We could also pass
      * in a path as a client argument.
      */
-    data->log = log_file_open(client_id, drcontext,
-        logdir.c_str(),
-        // op_logdir.get_value().empty()
-        // ? NULL /* using client lib path */
-        // : op_logdir.get_value().c_str(),
-        "instrace",
+    std::string logfile = logdir + "instrace.log";
+    data->log = dr_open_file(logfile.c_str(), DR_FILE_WRITE_OVERWRITE |
+    // data->log = log_file_open(client_id, drcontext,
+    //     logdir.c_str(),
+    //     // op_logdir.get_value().empty()
+    //     // ? NULL /* using client lib path */
+    //     // : op_logdir.get_value().c_str(),
+    //     "instrace",
 #ifndef WINDOWS
                       DR_FILE_CLOSE_ON_FORK |
 #endif
                           DR_FILE_ALLOW_LARGE);
+    if (data->log == INVALID_FILE) {
+        dr_fprintf(STDERR, "Could not open log file %s\n", logfile.c_str());
+        dr_abort();
+    }
 #ifdef OUTPUT_TEXT
     data->logf = log_stream_from_file(data->log);
     fprintf(data->logf, "Format: <instr address>,<opcode>\n");
@@ -391,6 +400,9 @@ event_thread_exit(void *drcontext)
     flush_saved_memories();
     if (saved_memories_file != INVALID_FILE)
         dr_close_file(saved_memories_file);
+    
+    // write list of modules
+    flush_saved_modules();
 
 #ifdef OUTPUT_TEXT
     log_stream_close(data->logf); /* closes fd too */
@@ -471,23 +483,26 @@ dump_mapped_memory()
         std::stringstream ss;
         // ss << op_logdir.get_value() << '\\';
         ss << logdir << "modules" << PATHSEP;
-        ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << start_addr;
-        ss << '-';
-        ss << "0x" << std::setfill('0') << std::setw(16) << std::hex << end_addr;
-        ss << '-';
+        std::stringstream ss_fname;
+        ss_fname << "0x" << std::setfill('0') << std::setw(16) << std::hex << start_addr;
+        ss_fname << '-';
+        ss_fname << "0x" << std::setfill('0') << std::setw(16) << std::hex << end_addr;
+        ss_fname << '-';
         // mark main module
         if (start_addr <= (size_t)main_entry_pc && (size_t)main_entry_pc < end_addr)
-            ss << "main";
+            ss_fname << "main";
         else
-            ss << "other";
+            ss_fname << "other";
         
-        ss << '_' << short_name;
+        ss_fname << '_' << short_name;
+        ss << ss_fname.str();
         std::string fname { ss.str() };
         file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
         if (f == INVALID_FILE) {
             dr_fprintf(STDERR, "Could not open file %s\n", fname.c_str());
             dr_abort();
         }
+        saved_module_names.push_back(ss_fname.str());
         size_t buf_size = end_addr - start_addr;
         dr_switch_to_app_state(drcontext);
         size_t num_written = dr_write_file(f, (void*)start_addr, buf_size);
@@ -700,6 +715,22 @@ flush_saved_contexts()
         dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
     }
     saved_contexts.clear();
+}
+
+static void
+flush_saved_modules()
+{
+    std::string modules_path = logdir + "modules.txt";
+    file_t f = dr_open_file(modules_path.c_str(), DR_FILE_WRITE_OVERWRITE);
+    if (f == INVALID_FILE) {
+        dr_fprintf(STDERR, "Could not open file %s\n", modules_path.c_str());
+        return;
+    }
+    for (auto &mod : saved_module_names) {
+        dr_write_file(f, mod.c_str(), mod.size());
+        dr_write_file(f, "\n", 1);
+    }
+    dr_close_file(f);
 }
 
 static void
