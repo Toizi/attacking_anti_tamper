@@ -6,10 +6,7 @@
         {
             "label": "build_tracer_windows",
             "type": "shell",
-            "command": "${workspaceRoot}/tracer/build.bat Debug",
-            "group": {
-                "kind": "build",
-            }
+            "command": "${workspaceRoot}/tracer/build.bat Debug"
         },
         {
             "label": "build_tracer_linux",
@@ -18,7 +15,22 @@
             "group": {
                 "kind": "build",
                 "isDefault": true
-            }
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "build_taint_linux",
+            "type": "shell",
+            "command": "${workspaceRoot}/taint_cpp/build.sh Release",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
         }
     ]
 }
