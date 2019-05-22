@@ -9,15 +9,15 @@ import tempfile
 import os
 import subprocess
 import shlex
-import time
+from timeit import default_timer as timer
 import traceback
 import json
 import shutil
 import stat
+import binascii
 from pprint import pprint
 
-from taint.run import main as taint_main
-from taint.r2_apply_patches import crack_function
+from taint.r2_apply_patches import crack_function, patch_program
 
 RESULT_KEY = 'attack_result'
 def parse_args(argv):
@@ -38,6 +38,9 @@ def parse_args(argv):
             "the crack+patch was successful")
     parser.add_argument("--crack-only-output", type=str,
         help="path of cracked but not patched input binary")
+    parser.add_argument("--taint-backend", type=str, choices=["python", "cpp"],
+        default="cpp",
+        help="which implementation for the taint analysis should be used")
     parser.add_argument("--crack-function", type=str)
     parser.add_argument("input_file")
     
@@ -51,15 +54,18 @@ def parse_args(argv):
     return args
 
 def setup_environment():
-    global TRACER_PATH
+    global TRACER_PATH, TAINT_CPP_PATH
     mydir   = os.path.dirname(os.path.abspath(__file__))
     TRACER_PATH = os.path.join(mydir, 'build_tracer_Release', 'linux', 'run_manual.sh')
+    TAINT_CPP_PATH = os.path.join(mydir, 'build_taint_cpp_Release', 'linux/src', 'taint_main')
     # analyze_path = os.path.join(mydir, 'taint', 'analyze.py')
     return True
 
-def run_cmd(cmd):
+def run_cmd(cmd, log_file=None):
     try:
-        subprocess.check_call(shlex.split(cmd))
+        subprocess.check_call(shlex.split(cmd) if cmd is str else cmd,
+            stdout=log_file,
+            stderr=log_file)
     except subprocess.CalledProcessError:
         traceback.print_exc()
         return False
@@ -116,12 +122,49 @@ def run_tracer(input_file, input_msg, log_dir):
         print(stderr_data)
     return success
 
-def run_taint_attack(input_file, build_dir, output_file, log_dir):
-    cmd = '"{log_dir}" --binary "{binary}" --output "{out}" -v'.format(
-        log_dir=log_dir,
-        binary=input_file,
-        out=output_file)
-    return taint_main(shlex.split(cmd))
+def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend):
+
+    if taint_backend == "python":
+        cmd = [
+            log_dir,
+            "--binary", input_file,
+            "--output", output_file,
+            "-v"
+        ]
+        from taint.run import main as taint_main
+        return taint_main(cmd)
+
+    patches_path = os.path.join(build_dir, 'patches.json')
+    cmd = [
+        TAINT_CPP_PATH,
+        log_dir,
+        "--json-output", patches_path,
+        "-v"
+    ]
+    if not run_cmd(cmd):
+        return False
+
+    with open(patches_path, 'r') as f:
+        patches = json.load(f)
+    
+    # "address", "asm_string", "data_hex"
+    patches = patches['patches']
+    # address, binary data, cmd_string
+    patches_r2_format = [
+        (entry['address'],
+        binascii.unhexlify(entry['data_hex']),
+        entry['asm_string'])
+        for entry in patches
+    ]
+
+    # cpp backend doesn't know how to apply patches
+    print('[*] applying patches\n {} => {}'.format(input_file, output_file))
+    if not patch_program(input_file, output_file, patches_r2_format):
+        print('[-] r2_apply_patches failed')
+        return False
+
+    return True
+
 
 def check_patch_success(crack_only_path, patched_path, input_msg, report_dict):
     # run binary that has been cracked but not patched to see if self-checking
@@ -152,26 +195,26 @@ def run(args, build_dir, track_time, report_dict):
     # report the overhead of the obfuscation
     if track_time:
         print('[*] run_binary')
-        start_time = time.clock()
+        start_time = timer()
         ret = run_binary(args.input_file, args.input)
         if ret is False:
             print('[-] run_binary')
             return False
-        report_dict['execution'] = time.clock() - start_time
+        report_dict['execution'] = timer() - start_time
 
     print('[*] run_tracer')
-    start_time = time.clock()
+    start_time = timer()
     ret = run_tracer(args.input_file, args.input, log_dir)
-    report_dict['tracer'] = time.clock() - start_time
+    report_dict['tracer'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'tracer_failed'
         print('[-] run_tracer')
         return False
 
     print('[*] run_taint_attack')
-    start_time = time.clock()
-    ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir)
-    report_dict['taint'] = time.clock() - start_time
+    start_time = timer()
+    ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir, args.taint_backend)
+    report_dict['taint'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'taint_failed'
         print('[-] run_taint_attack')

@@ -4,3 +4,6 @@
 [submodule "taint_cpp/extern/fmt"]
 	path = taint_cpp/extern/fmt
 	url = https://github.com/fmtlib/fmt.git
+[submodule "taint_cpp/extern/keystone"]
+	path = taint_cpp/extern/keystone
+	url = https://github.com/keystone-engine/keystone.git

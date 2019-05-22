@@ -22,6 +22,8 @@ add_subdirectory(extern/Triton)
 add_library(clipp INTERFACE)
 target_include_directories(clipp INTERFACE extern/Clipp)
 # find_library(libtriton)
+set(BUILD_LIBS_ONLY ON)
+add_subdirectory(extern/keystone)
 
 set(LLVM_COV_EXCLUDE_REGEX "extern/.*|.*.hpp")
 include(ClangRuntimeSupport)

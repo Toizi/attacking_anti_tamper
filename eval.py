@@ -130,6 +130,7 @@ def run_sample(args, sample):
             "-o", obfuscation.patched_path,
             "--crack-only-output", obfuscation.cracked_path,
             "--build-dir", obfuscation.build_path,
+            "--taint-backend", "cpp",
             obfuscation.original_path
         ]
         if input_str:

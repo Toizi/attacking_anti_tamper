@@ -89,16 +89,12 @@ int main(int argc, char **argv)
         modules.push_back(std::move(mod));
     }
 
-    std::vector<saved_module_t> main_modules;
-    std::copy_if(modules.begin(), modules.end(), std::back_inserter(main_modules),
-                 [](const saved_module_t &mod) {
-                     return mod.is_main;
-                 });
 
     TaintAnalysis analysis;
+    analysis.set_debug(args.verbose);
     // setup the memory/taint
     fmt::print("[*] setting up the context\n");
-    if (!analysis.setup_context(modules))
+    if (!analysis.setup_context(modules)) // modules are now owned by analysis
     {
         fmt::print(stderr, "failed setting up the context\n");
         return 1;
@@ -106,35 +102,48 @@ int main(int argc, char **argv)
 
     // running the emulation
     fmt::print("[*] running the emulation\n");
-    saved_instructions_t *emu_result = analysis.emulate(trace, saved_contexts, saved_memories, args.verbose);
-    if (!emu_result)
+    if (!analysis.emulate(trace, saved_contexts, saved_memories))
     {
         fmt::print(stderr, "failed emulation\n");
         return 1;
     }
-    std::unique_ptr<saved_instructions_t> tainted_instrs{emu_result};
 
-    // we are only interested in the instructions from the main module
-    std::vector<triton::arch::Instruction> main_exe_tainted_instrs;
-    for (const std::pair<uint64_t, triton::arch::Instruction> &saved_instr : *tainted_instrs)
+    // get patch instructions from analysis
+    fmt::print("[*] creating patch\n");
+    std::vector<std::unique_ptr<Patch>> patches = analysis.create_patch();
+    if (patches.empty()) {
+        fmt::print(stderr, "create patch failed\n");
+        return 1;
+    }
+    if (args.verbose)
     {
-        if (args.verbose)
-            fmt::print("[D] tainted instruction: {:#x} {}\n", saved_instr.first, saved_instr.second.getDisassembly());
-        for (auto &mod : main_modules)
+        fmt::print("[D] patches:\n");
+        for (auto &patch : patches)
         {
-            if (mod.start <= saved_instr.first && saved_instr.first < mod.end)
-            {
-                main_exe_tainted_instrs.push_back(saved_instr.second);
-                break;
-            }
+            fmt::print("  {}\n", patch->repr());
         }
     }
 
-    fmt::print("[*] tainted instructions (main modules only)\n");
-    for (auto &inst : main_exe_tainted_instrs)
+    // write json 
+    fmt::print("[*] writing json file\n");
+    std::ofstream json_file(args.json_output_path);
+    if (!json_file)
     {
-        fmt::print("  {:#018x}: {}\n", inst.getAddress(), inst.getDisassembly());
+        fmt::print(stderr, "cannot open json output path\n  '{:s}'\n", args.json_output_path);
+        return 1;
     }
+    json_file << "{\n \"patches\": [\n";
+    bool first = true;
+    for (auto &patch : patches) {
+        if (first) {
+            first = false;
+        } else
+            json_file << ',';
+        json_file << '\n';
+        json_file << patch->json();
+    }
+    json_file << "]}\n";
+
 
     return 0;
 }
