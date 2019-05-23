@@ -10,6 +10,9 @@ import json
 from glob import glob
 from collections import namedtuple
 from pprint import pformat, pprint
+from multiprocessing import cpu_count
+from multiprocessing.pool import Pool, Process
+class KeyboardInterruptError(Exception): pass
 
 class EvalSample:
 
@@ -57,6 +60,7 @@ def parse_args(argv):
         required=False)
     parser.add_argument("--crack-function", type=str, required=True,
         help="name of the function that will be cracked to check for successful patching")
+    parser.add_argument("-j", "--process-count", type=int)
     dbg_group = parser.add_mutually_exclusive_group()
     dbg_group.add_argument("--print-only", action="store_true",
         help="only create required tmp dirs and print the commands to run")
@@ -70,6 +74,10 @@ def parse_args(argv):
     # make sure directory ends with separator to allow globbing
     if args.input_dir[-1] != os.path.sep:
         args.input_dir += os.path.sep
+    
+    # parallel run by default
+    if args.process_count is None:
+        args.process_count = cpu_count()
     
     return args
 
@@ -110,20 +118,16 @@ def get_samples(input_dir, build_dir):
         samples.append(EvalSample(base_file, obfuscations, build_dir))
     return samples
 
-def run_sample(args, sample):
-    if args.analyze_dir:
-        return True
-
-    # create build dir for sample
-    os.mkdir(sample.build_path)
-    for obfuscation in sample.obfuscations:
+def run_obfuscation(obfuscation):
+    # args has been made global in pool
+    try:
         # create build dir for obfuscation
         os.mkdir(obfuscation.build_path)
         # create symlink for easier debugging
         os.symlink(os.path.abspath(obfuscation.original_path), os.path.join(obfuscation.build_path, 'bin'))
 
         # run the taint attack to patch and crack the binary
-        input_str = '' if not args.input else '--input {}'.format(args.input)
+        input_arg = None if not args.input else ['--input', args.input]
         cmd = [ RUN_PATH,
             "--crack-function", args.crack_function,
             "--report-path", obfuscation.report_path,
@@ -133,21 +137,35 @@ def run_sample(args, sample):
             "--taint-backend", "cpp",
             obfuscation.original_path
         ]
-        if input_str:
-            cmd.append(input_str)
+        if input_arg:
+            cmd.extend(input_arg)
         if args.verbose or args.print_only:
             print("running {} > {}".format(' '.join(cmd), obfuscation.log_path))
             if args.print_only:
-                continue
+                return True
         with open(obfuscation.log_path, 'w') as log:
             success = run_cmd(cmd, log)
             if not success:
                 print('[-] error running cmd {}, see {} for output'.format(cmd, obfuscation.log_path))
                 return False
-    return True
+        return True
+    except KeyboardInterrupt:
+        raise KeyboardInterruptError()
+    return False
+
+def run_sample(sample, pool):
+
+    # create build dir for sample
+    os.mkdir(sample.build_path)
+
+    results = []
+    # run each obfuscation in a process from the pool
+    for obfuscation in sample.obfuscations:
+        results.append(pool.apply_async(run_obfuscation, (obfuscation,)))
+    return results
 
     
-def get_sample_report(args, sample):
+def get_sample_report(sample):
     reports = dict()
     for obfuscation in sample.obfuscations:
         with open(obfuscation.report_path, 'r') as f:
@@ -175,7 +193,7 @@ def analyze_reports(args, reports):
                 'self_check_triggered' : report.get('self_check_triggered'),
             }
             for val in analysis_values:
-                analysis[val] = report.get(val)
+                analysis[val + '_time'] = report.get(val)
                 analysis[val + '_rel_overhead'] = report.get(val) / ref_report[val]
                 analysis[val + '_abs_overhead'] = report.get(val) - ref_report[val]
 
@@ -198,20 +216,45 @@ def run(args, build_dir):
         for sample in samples:
             print('{}\n'.format(sample))
     
-    print('[*] run_samples')
-    reports = []
-    for sample in samples:
-        run_success = run_sample(args, sample)
-        if args.print_only:
-            continue
-        if not run_success:
-            print('[-] run_sample')
-            return False
-        report = get_sample_report(args, sample)
-        reports.append((sample, report))
+    print('[*] run_samples (process count = {})'.format(args.process_count))
+    results = []
+
+    def child_init(_args):
+        global args
+        args = _args
+    pool = Pool(processes=args.process_count, initializer=child_init, initargs=(args,))
+    try:
+        if not args.analyze_dir:
+            results = []
+            # get apply_async results from all of the obfuscations in all samples
+            for sample in samples:
+                results.extend(run_sample(sample, pool))
+            pool.close()
+
+            # make sure all of them executed
+            for result in results:
+                if not result.get(999999999):
+                    print('[-] run_sample')
+                    return False
+
+    except KeyboardInterrupt:
+        pool.terminate()
+        return False
+    except Exception, e:
+        traceback.print_exc()
+        pool.terminate()
+        return False
+    finally:
+        pool.join()
+
     if args.print_only:
         print('[*] print_only mode. exiting')
         return True
+
+    reports = []
+    for sample in samples:
+        report = get_sample_report(sample)
+        reports.append((sample, report))
         
     print('[*] analyze_reports')
     analysis = analyze_reports(args, reports)
