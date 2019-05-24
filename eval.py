@@ -86,10 +86,13 @@ def run_cmd(cmd, log_file=None):
         subprocess.check_call(shlex.split(cmd) if cmd is str else cmd,
             stdout=log_file,
             stderr=log_file)
+        return True
     except subprocess.CalledProcessError:
         traceback.print_exc()
-        return False
-    return True
+    except OSError:
+        traceback.print_exc()
+        print("  command: {}".format(cmd))
+    return False
 
 
 def setup_environment():
@@ -288,4 +291,5 @@ def main(argv):
     return True
 
 if __name__ == '__main__':
-    main(os.sys.argv[1:])
+    if main(os.sys.argv[1:]) is not True:
+        exit(1)

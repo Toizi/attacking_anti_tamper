@@ -66,12 +66,13 @@ def run_cmd(cmd, log_file=None):
         subprocess.check_call(shlex.split(cmd) if cmd is str else cmd,
             stdout=log_file,
             stderr=log_file)
+        return True
     except subprocess.CalledProcessError:
         traceback.print_exc()
     except OSError:
         traceback.print_exc()
-    print("  command {}".format(cmd))
-    return True
+        print("  command {}".format(cmd))
+    return False
 
 def run_binary(input_file, input_msg):
     cmd = '"{input}"'.format(input=os.path.abspath(input_file))
@@ -84,7 +85,7 @@ def run_binary(input_file, input_msg):
         traceback.print_exc()
     except OSError:
         traceback.print_exc()
-    print("  binary: {}".format(cmd))
+        print("  binary: {}".format(cmd))
     return False
 
 def run_tracer(input_file, input_msg, log_dir):
@@ -107,7 +108,6 @@ def run_tracer(input_file, input_msg, log_dir):
         raise
     except subprocess.CalledProcessError:
         traceback.print_exc()
-        print('error running command:\n"{}"'.format(cmd))
         raise
     # terminated = False
     # while True:
@@ -144,7 +144,7 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend)
         "--json-output", patches_path,
         "-v"
     ]
-    if not run_cmd(cmd):
+    if run_cmd(cmd) is not True:
         return False
 
     with open(patches_path, 'r') as f:
