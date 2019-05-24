@@ -68,11 +68,13 @@ def run_cmd(cmd, log_file=None):
             stderr=log_file)
     except subprocess.CalledProcessError:
         traceback.print_exc()
-        return False
+    except OSError:
+        traceback.print_exc()
+    print("  command {}".format(cmd))
     return True
 
 def run_binary(input_file, input_msg):
-    cmd = '"{input}"'.format(input=input_file)
+    cmd = '"{input}"'.format(input=os.path.abspath(input_file))
     try:
         proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -82,6 +84,7 @@ def run_binary(input_file, input_msg):
         traceback.print_exc()
     except OSError:
         traceback.print_exc()
+    print("  binary: {}".format(cmd))
     return False
 
 def run_tracer(input_file, input_msg, log_dir):
