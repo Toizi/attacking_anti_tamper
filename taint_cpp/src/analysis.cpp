@@ -10,7 +10,7 @@ std::string Patch::repr() {
     std::stringstream ss;
     ss << fmt::format("({:#x}, \"{}\", \"", address, asm_string);
         for (auto val : data) {
-            ss << fmt::format("\\x{:0<2x}", (uint8_t)val);
+            ss << fmt::format("\\x{:0>2x}", (uint8_t)val);
         }
     ss << "\")";
     return ss.str();
@@ -20,7 +20,7 @@ std::string Patch::json() {
     std::stringstream ss;
     ss << fmt::format("{{ \"address\": {}, \"asm_string\": \"{}\", \"data_hex\": \"", address, asm_string);
         for (auto val : data) {
-            ss << fmt::format("{:0<2x}", (uint8_t)val);
+            ss << fmt::format("{:0>2x}", (uint8_t)val);
         }
     ss << "\" }";
     return ss.str();
