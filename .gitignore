@@ -6,3 +6,4 @@ DynamoRIO-Linux-7.1.0-1/
 tracer_test/
 .vscode/ipch
 *.pyc
+.gdbhistory

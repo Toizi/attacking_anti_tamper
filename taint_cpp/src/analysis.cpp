@@ -328,7 +328,44 @@ TaintAnalysis::create_patch()
             }
             patches.push_back(std::move(patch));
         }
-        // else if (instr is cmovcc)
+        // cmov
+        else if (std::string instr_disas = instr.getDisassembly(); instr_disas.find("cmov") >= 0){
+            if (this->debug)
+                fmt::print("  is conditional move\n");
+
+            auto patch = std::make_unique<Patch>();
+            patch->address = instr.getAddress();
+            if (instr.isConditionTaken())
+            {
+                std::string operands_str = instr_disas.substr(instr_disas.find(' ') + 1);
+                patch->asm_string = fmt::format("mov {}", operands_str);
+
+                unsigned char *data;
+                size_t data_len, stat_count;
+                if (ks_asm(ks, patch->asm_string.c_str(), instr.getAddress(), &data, &data_len, &stat_count))
+                {
+                    fmt::print(stderr, "ks_asm failed:\n {}\n", ks_errno(ks));
+                    goto cleanup;
+                }
+                for (int i = 0; i < instr.getSize(); ++i)
+                {
+                    if (i < data_len)
+                        patch->data.push_back(data[i]);
+                    else
+                        patch->data.push_back('\x90');
+                }
+                free(data);
+            }
+            else
+            {
+                patch->asm_string = "nop";
+                for (int i = 0; i < instr.getSize(); ++i)
+                {
+                    patch->data.push_back('\x90');
+                }
+            }
+            patches.push_back(std::move(patch));
+        }
 
     loop_end:
         continue;
