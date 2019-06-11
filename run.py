@@ -42,6 +42,8 @@ def parse_args(argv):
         default="cpp",
         help="which implementation for the taint analysis should be used")
     parser.add_argument("--crack-function", type=str)
+    parser.add_argument("--cleanup", required=False, action="store_true",
+        help="removes tracer fragments after executing the attack")
     parser.add_argument("input_file")
     
     args = parser.parse_args(argv)
@@ -217,6 +219,9 @@ def run(args, build_dir, track_time, report_dict):
     print('[*] run_taint_attack')
     start_time = timer()
     ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir, args.taint_backend)
+    if args.cleanup:
+        shutil.rmtree(log_dir, ignore_errors=True)
+
     report_dict['taint'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'taint_failed'

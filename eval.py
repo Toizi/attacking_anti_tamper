@@ -39,6 +39,7 @@ class Obfuscation:
         self.cracked_path = os.path.join(self.build_path, 'bin_cracked')
         self.patched_path = os.path.join(self.build_path, 'bin_patched_cracked')
         self.log_path = os.path.join(self.build_path, 'log.txt')
+        self.cmdline_path = os.path.join(self.build_path, 'cmdline.txt')
     
     def __str__(self):
         # s = """{}""".format()
@@ -57,6 +58,9 @@ def parse_args(argv):
         required=False)
     parser.add_argument("-i", "--input",
         help="message that will be supplied to stdin of the binary when run",
+        required=False)
+    parser.add_argument("--build-dir",
+        help="directory used to store temporary files (/tmp by default)",
         required=False)
     parser.add_argument("--crack-function", type=str, required=True,
         help="name of the function that will be cracked to check for successful patching")
@@ -138,10 +142,16 @@ def run_obfuscation(obfuscation):
             "--crack-only-output", obfuscation.cracked_path,
             "--build-dir", obfuscation.build_path,
             "--taint-backend", "cpp",
+            "--cleanup",
             obfuscation.original_path
         ]
         if input_arg:
             cmd.extend(input_arg)
+
+        # store cmdline for easier debugging
+        with open(obfuscation.cmdline_path, 'w') as f:
+            f.write("{} > {}\n".format(' '.join(cmd), obfuscation.log_path))
+
         if args.verbose or args.print_only:
             print("running {} > {}".format(' '.join(cmd), obfuscation.log_path))
             if args.print_only:
@@ -239,6 +249,8 @@ def run(args, build_dir):
                 if not result.get(999999999):
                     print('[-] run_sample')
                     return False
+        else:
+            pool.close()
 
     except KeyboardInterrupt:
         pool.terminate()
@@ -281,7 +293,10 @@ def main(argv):
     if not setup_environment():
         return False
 
-    build_dir  = tempfile.mkdtemp() if args.analyze_dir is None else args.analyze_dir
+    # use a tmp directory if build dir is not specified
+    # or use a previously created build dir if analyze_dir is specified
+    build_dir  = (tempfile.mkdtemp() if args.build_dir is None else args.build_dir)\
+        if args.analyze_dir is None else args.analyze_dir
     success = run(args, build_dir)
 
     print('[*] intermediate results: {}'.format(build_dir))
