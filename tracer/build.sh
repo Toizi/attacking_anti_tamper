@@ -19,7 +19,7 @@ if [ ! -d "${build_path}" ]; then
         -D "CMAKE_BUILD_TYPE:STRING=${build_type}" \
         -D "CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=1" \
         -D "CMAKE_INSTALL_PREFIX=${out_path}" \
-        -D "DynamoRIO_DIR:PATH=${mypath}/../DynamoRIO-Linux-7.1.0-1/cmake" \
+        -D "DynamoRIO_DIR:PATH=${mypath}/../../DynamoRIO-Linux-7.1.0-1/cmake" \
         ../../tracer
 fi
 
