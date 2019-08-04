@@ -188,7 +188,13 @@ def check_patch_success(crack_only_path, patched_path, input_msg, report_dict):
     if ret is False:
         print('[-] error running patched_path')
         return False
-    report_dict[RESULT_KEY] = 'success' if 'Tampered binary!' not in ret[0] else 'detected'
+    if 'Tampered binary!' not in ret[0]:
+        if 'success' in ret[0]:
+            report_dict[RESULT_KEY] = 'sucess'
+        else:
+            report_dict[RESULT_KEY] = 'broken_program'
+    else:
+        report_dict[RESULT_KEY] = 'detected'
 
     return True
 

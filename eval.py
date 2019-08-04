@@ -181,10 +181,17 @@ def run_sample(sample, pool):
 def get_sample_report(sample):
     reports = dict()
     for obfuscation in sample.obfuscations:
-        with open(obfuscation.report_path, 'r') as f:
-            reports[obfuscation.options_str] = json.load(f)
-            reports[obfuscation.options_str]['build_path'] = obfuscation.build_path
+        try:
+            with open(obfuscation.report_path, 'r') as f:
+                reports[obfuscation.options_str] = json.load(f)
+                reports[obfuscation.options_str]['build_path'] = obfuscation.build_path
+        except KeyboardInterrupt:
+            raise
+        except:
+            print("exception in get_sample_report. continuing regardless")
+            continue
     
+
     return reports
 
 
