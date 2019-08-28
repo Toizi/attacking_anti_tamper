@@ -45,9 +45,6 @@
  * (2) Inlines the buffer filling code to avoid a full context switch.
  * (3) Uses a lean procedure call for clean calls to reduce code cache size.
  *
- * The OUTPUT_TEXT define controls the format of the trace: text or binary.
- * Creating a text trace file makes the tool an order of magnitude (!) slower
- * than creating a binary file; thus, the default is binary.
  */
 
 #include <cstdio>
@@ -89,18 +86,6 @@ typedef struct _ins_ref_t {
  */
 #define MEM_BUF_SIZE (sizeof(ins_ref_t) * MAX_NUM_INS_REFS)
 
-/* Thread-private data */
-typedef struct {
-    char *buf_ptr;
-    char *buf_base;
-    /* buf_end holds the negative value of real address of buffer end. */
-    ptr_int_t buf_end;
-    file_t log;
-#ifdef OUTPUT_TEXT
-    FILE *logf;
-#endif
-} per_thread_t;
-
 typedef struct {
     size_t instr_num;
 
@@ -128,6 +113,23 @@ typedef struct {
 
     size_t fs;
 } saved_context_t;
+#define MAX_NUM_CTX 4096
+#define CTX_BUF_SIZE (sizeof(saved_context_t) * MAX_NUM_CTX)
+
+/* Thread-private data */
+typedef struct {
+    char *buf_ptr;
+    char *buf_base;
+    /* buf_end holds the negative value of real address of buffer end. */
+    ptr_int_t buf_end;
+    file_t log;
+    size_t instr_count;
+
+    saved_context_t *context_buf;
+    int context_buf_cnt;
+
+} per_thread_t;
+
 
 typedef struct {
     size_t trace_addr;
@@ -137,13 +139,12 @@ typedef struct {
     const char *data;
 } saved_memory_t;
 
-static size_t global_instr_count = 0;
 static size_t page_size;
 static client_id_t client_id;
 static int tls_index;
 static file_t saved_contexts_file = INVALID_FILE;
 static file_t saved_memories_file = INVALID_FILE;
-static std::vector<saved_context_t> saved_contexts;
+// static std::vector<saved_context_t> saved_contexts;
 static std::vector<saved_memory_t> saved_memories;
 static std::vector<std::string> saved_module_names;
 static bool initial_state_recorded = false;
@@ -169,7 +170,7 @@ save_context(void*, dr_mcontext_t*);
 static void
 flush_saved_memories();
 static void
-flush_saved_contexts();
+flush_saved_contexts(per_thread_t*);
 static void
 flush_saved_modules();
 static void
@@ -356,6 +357,11 @@ event_thread_init(void *drcontext)
     /* set buf_end to be negative of address of buffer end for the lea later */
     data->buf_end = -(ptr_int_t)(data->buf_base + MEM_BUF_SIZE);
 
+    data->context_buf = (saved_context_t*)dr_thread_alloc(drcontext, CTX_BUF_SIZE);
+    data->context_buf_cnt = 0;
+
+    data->instr_count = 0;
+
     /* We're going to dump our data to a per-thread file.
      * On Windows we need an absolute path so we place it in
      * the same directory as our library. We could also pass
@@ -377,10 +383,6 @@ event_thread_init(void *drcontext)
         dr_fprintf(STDERR, "Could not open log file %s\n", logfile.c_str());
         dr_abort();
     }
-#ifdef OUTPUT_TEXT
-    data->logf = log_stream_from_file(data->log);
-    fprintf(data->logf, "Format: <instr address>,<opcode>\n");
-#endif
 }
 
 static void
@@ -392,7 +394,7 @@ event_thread_exit(void *drcontext)
     data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
 
     // write mcontext structs
-    flush_saved_contexts();
+    flush_saved_contexts(data);
     if (saved_contexts_file != INVALID_FILE)
         dr_close_file(saved_contexts_file);
 
@@ -404,11 +406,7 @@ event_thread_exit(void *drcontext)
     // write list of modules
     flush_saved_modules();
 
-#ifdef OUTPUT_TEXT
-    log_stream_close(data->logf); /* closes fd too */
-#else
     log_file_close(data->log);
-#endif
     dr_thread_free(drcontext, data->buf_base, MEM_BUF_SIZE);
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
 }
@@ -627,8 +625,9 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
 static void
 save_context(void *drcontext, dr_mcontext_t *mcontext)
 {
+    per_thread_t *data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
     saved_context_t s;
-    s.instr_num = global_instr_count - 1;
+    s.instr_num = data->instr_count - 1;
 
     s.xdi = (size_t)mcontext->xdi;
     s.xsi = (size_t)mcontext->xsi;
@@ -659,7 +658,11 @@ save_context(void *drcontext, dr_mcontext_t *mcontext)
     // dr_printf("fs addr %#zx [0x28] = %#zx, rax = %#zx\n", tb, tb_val, mcontext->rax);
     s.fs  = tb;
 
-    saved_contexts.push_back(s);
+    // check if the buffer is full
+    if (data->context_buf_cnt >= MAX_NUM_CTX)
+        flush_saved_contexts(data);
+    // save context in buffer
+    data->context_buf[data->context_buf_cnt++] = s;
 }
 
 static void
@@ -695,9 +698,9 @@ flush_saved_memories()
 }
 
 static void
-flush_saved_contexts()
+flush_saved_contexts(per_thread_t* data)
 {
-    if (saved_contexts.empty())
+    if (data->context_buf_cnt == 0)
         return;
 
     std::string fname = logdir + "saved_contexts.bin";
@@ -709,12 +712,12 @@ flush_saved_contexts()
         }
         saved_contexts_file = f;
     }
-    size_t buf_size = saved_contexts.size() * sizeof(saved_contexts[0]);
-    size_t num_written = dr_write_file(saved_contexts_file, saved_contexts.data(), buf_size);
+    size_t buf_size = data->context_buf_cnt * sizeof(data->context_buf[0]);
+    size_t num_written = dr_write_file(saved_contexts_file, data->context_buf, buf_size);
     if (num_written != buf_size) {
         dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
     }
-    saved_contexts.clear();
+    data->context_buf_cnt = 0;
 }
 
 static void
@@ -738,28 +741,11 @@ flush_saved_traces(void *drcontext)
 {
     per_thread_t *data;
     ins_ref_t *ins_ref;
-#ifdef OUTPUT_TEXT
-    int i;
-    int num_refs;
-#endif
 
     data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
     ins_ref = (ins_ref_t *)data->buf_base;
 
-#ifdef OUTPUT_TEXT
-    num_refs = (int)((ins_ref_t *)data->buf_ptr - ins_ref);
-    /* We use libc's fprintf as it is buffered and much faster than dr_fprintf
-     * for repeated printing that dominates performance, as the printing does here.
-     */
-    for (i = 0; i < num_refs; i++) {
-        /* We use PIFX to avoid leading zeroes and shrink the resulting file. */
-        fprintf(data->logf, PIFX ",%s\n", (ptr_uint_t)ins_ref->pc,
-                decode_opcode_name(ins_ref->opcode));
-        ++ins_ref;
-    }
-#else
     dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
-#endif
 
     memset(data->buf_base, 0, MEM_BUF_SIZE);
     data->buf_ptr = data->buf_base;
@@ -777,7 +763,7 @@ clean_call_trace(size_t pc)
     void *drcontext = dr_get_current_drcontext();
     data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
 
-    global_instr_count += 1;
+    data->instr_count += 1;
     *(size_t*)(data->buf_ptr) = pc;
     data->buf_ptr += sizeof(ins_ref_t);
     if ((size_t)data->buf_ptr >= (size_t)-data->buf_end)
@@ -801,6 +787,7 @@ clean_call_save_memory(size_t pc)
         return;
     }
 
+    per_thread_t *data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
 #ifndef MEMORY_SAVE_STACK_ONLY
     // query the entire address space and save anything that looks like data
     byte *addr = 0;
@@ -814,7 +801,7 @@ clean_call_save_memory(size_t pc)
             continue;
         
         saved_memory_t saved_memory = { 0 };
-        saved_memory.trace_addr = global_instr_count - 1;
+        saved_memory.trace_addr = data->instr_count - 1;
         saved_memory.start_addr = (size_t)mem_info.base_pc;
         saved_memory.size = mem_info.size;
         saved_memory.data = (const char*)dr_global_alloc(saved_memory.size);
@@ -831,7 +818,7 @@ clean_call_save_memory(size_t pc)
     }
 
     saved_memory_t saved_memory = { 0 };
-    saved_memory.trace_addr = global_instr_count - 1;
+    saved_memory.trace_addr = data->instr_count - 1;
     saved_memory.start_addr = saved_stack_start;
     saved_memory.size = saved_stack_end - saved_stack_start;
     saved_memory.data = (const char*)dr_global_alloc(saved_memory.size);
