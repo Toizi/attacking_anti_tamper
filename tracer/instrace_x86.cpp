@@ -84,7 +84,7 @@ typedef struct _ins_ref_t {
 /* The size of the memory buffer for holding ins_refs. When it fills up,
  * we dump data from the buffer to the file.
  */
-#define MEM_BUF_SIZE (sizeof(ins_ref_t) * MAX_NUM_INS_REFS)
+#define INS_BUF_SIZE (sizeof(ins_ref_t) * MAX_NUM_INS_REFS)
 
 typedef struct {
     size_t instr_num;
@@ -116,6 +116,16 @@ typedef struct {
 #define MAX_NUM_CTX 4096
 #define CTX_BUF_SIZE (sizeof(saved_context_t) * MAX_NUM_CTX)
 
+typedef struct {
+    size_t trace_addr;
+    size_t start_addr;
+    size_t size;
+    // must be freed with dr_global_free(data, len)
+    const char *data;
+} saved_memory_t;
+#define MAX_NUM_MEM 4096
+#define MEM_BUF_SIZE (sizeof(saved_memory_t) * MAX_NUM_MEM)
+
 /* Thread-private data */
 typedef struct {
     char *buf_ptr;
@@ -125,31 +135,31 @@ typedef struct {
     file_t log;
     size_t instr_count;
 
+    file_t saved_contexts_file;
     saved_context_t *context_buf;
     int context_buf_cnt;
+
+    file_t saved_memories_file;
+    saved_memory_t *memory_buf;
+    int memory_buf_cnt;
 
 } per_thread_t;
 
 
-typedef struct {
-    size_t trace_addr;
-    size_t start_addr;
-    size_t size;
-    // must be freed with dr_global_free(data, len)
-    const char *data;
-} saved_memory_t;
 
 static size_t page_size;
 static client_id_t client_id;
 static int tls_index;
-static file_t saved_contexts_file = INVALID_FILE;
-static file_t saved_memories_file = INVALID_FILE;
+// static file_t saved_contexts_file = INVALID_FILE;
+// static file_t saved_memories_file = INVALID_FILE;
 // static std::vector<saved_context_t> saved_contexts;
-static std::vector<saved_memory_t> saved_memories;
+// static std::vector<saved_memory_t> saved_memories;
 static std::vector<std::string> saved_module_names;
 static bool initial_state_recorded = false;
+#ifdef MEMORY_SAVE_STACK_ONLY
 static size_t saved_stack_start = -1;
 static size_t saved_stack_end = -1;
+#endif
 static app_pc main_entry_pc = 0;
 
 static void
@@ -168,7 +178,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
 static void
 save_context(void*, dr_mcontext_t*);
 static void
-flush_saved_memories();
+flush_saved_memories(per_thread_t*);
 static void
 flush_saved_contexts(per_thread_t*);
 static void
@@ -352,13 +362,18 @@ event_thread_init(void *drcontext)
     /* allocate thread private data */
     data = (per_thread_t*)dr_thread_alloc(drcontext, sizeof(per_thread_t));
     drmgr_set_tls_field(drcontext, tls_index, data);
-    data->buf_base = (char*)dr_thread_alloc(drcontext, MEM_BUF_SIZE);
+    data->buf_base = (char*)dr_thread_alloc(drcontext, INS_BUF_SIZE);
     data->buf_ptr = data->buf_base;
     /* set buf_end to be negative of address of buffer end for the lea later */
-    data->buf_end = -(ptr_int_t)(data->buf_base + MEM_BUF_SIZE);
+    data->buf_end = -(ptr_int_t)(data->buf_base + INS_BUF_SIZE);
 
+    data->saved_contexts_file = INVALID_FILE;
     data->context_buf = (saved_context_t*)dr_thread_alloc(drcontext, CTX_BUF_SIZE);
     data->context_buf_cnt = 0;
+
+    data->saved_memories_file = INVALID_FILE;
+    data->memory_buf = (saved_memory_t*)dr_thread_alloc(drcontext, MEM_BUF_SIZE);
+    data->memory_buf_cnt = 0;
 
     data->instr_count = 0;
 
@@ -395,19 +410,21 @@ event_thread_exit(void *drcontext)
 
     // write mcontext structs
     flush_saved_contexts(data);
-    if (saved_contexts_file != INVALID_FILE)
-        dr_close_file(saved_contexts_file);
+    if (data->saved_contexts_file != INVALID_FILE)
+        dr_close_file(data->saved_contexts_file);
 
     // write memory snapshots
-    flush_saved_memories();
-    if (saved_memories_file != INVALID_FILE)
-        dr_close_file(saved_memories_file);
+    flush_saved_memories(data);
+    if (data->saved_memories_file != INVALID_FILE)
+        dr_close_file(data->saved_memories_file);
     
     // write list of modules
     flush_saved_modules();
 
     log_file_close(data->log);
-    dr_thread_free(drcontext, data->buf_base, MEM_BUF_SIZE);
+    dr_thread_free(drcontext, data->buf_base, INS_BUF_SIZE);
+    dr_thread_free(drcontext, data->context_buf, CTX_BUF_SIZE);
+    dr_thread_free(drcontext, data->memory_buf, MEM_BUF_SIZE);
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
 }
 
@@ -447,11 +464,13 @@ dump_mapped_memory()
         size_t start_addr = (size_t)mem_info.base_pc;
         size_t end_addr = start_addr + size;
 
+#ifdef MEMORY_SAVE_STACK_ONLY
         // might be too naive to only save it at start since it could grow during runtime
         if (start_addr < mcontext.xsp && mcontext.xsp < end_addr) {
             saved_stack_start = start_addr;
             saved_stack_end = end_addr;
         }
+#endif
 
         if (!dr_memory_is_readable((byte*)start_addr, size)) {
             // dr_printf("Memory is not readable, won't dump. Protections: %x\n", mbi.Protect);
@@ -666,35 +685,35 @@ save_context(void *drcontext, dr_mcontext_t *mcontext)
 }
 
 static void
-flush_saved_memories()
+flush_saved_memories(per_thread_t *data)
 {
-    if (saved_memories.empty())
+    if (data->memory_buf_cnt == 0)
         return;
 
     std::string fname = logdir + "saved_memories.bin";
-    if (saved_memories_file == INVALID_FILE) {
+    if (data->saved_memories_file == INVALID_FILE) {
         file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
         if (f == INVALID_FILE) {
             dr_fprintf(STDERR, "Could not open file %s\n", fname.c_str());
             return;
         }
-        saved_memories_file = f;
+        data->saved_memories_file = f;
     }
 
-    for (saved_memory_t &saved_memory : saved_memories) {
-        size_t buf_size = sizeof(saved_memory);
-        size_t num_written = dr_write_file(saved_memories_file, &saved_memory, buf_size);
+    for (saved_memory_t *saved_memory = data->memory_buf; saved_memory < data->memory_buf + data->memory_buf_cnt; ++saved_memory) {
+        size_t buf_size = sizeof(*saved_memory);
+        size_t num_written = dr_write_file(data->saved_memories_file, saved_memory, buf_size);
         if (num_written != buf_size) {
             dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
         }
-        buf_size = saved_memory.size;
-        num_written = dr_write_file(saved_memories_file, saved_memory.data, buf_size);
+        buf_size = saved_memory->size;
+        num_written = dr_write_file(data->saved_memories_file, saved_memory->data, buf_size);
         if (num_written != buf_size) {
             dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
         }
-        dr_global_free((void*)saved_memory.data, saved_memory.size);
+        dr_global_free((void*)saved_memory->data, saved_memory->size);
     }
-    saved_memories.clear();
+    data->memory_buf_cnt = 0;
 }
 
 static void
@@ -704,16 +723,16 @@ flush_saved_contexts(per_thread_t* data)
         return;
 
     std::string fname = logdir + "saved_contexts.bin";
-    if (saved_contexts_file == INVALID_FILE) {
+    if (data->saved_contexts_file == INVALID_FILE) {
         file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
         if (f == INVALID_FILE) {
             dr_fprintf(STDERR, "Could not open file %s\n", fname.c_str());
             return;
         }
-        saved_contexts_file = f;
+        data->saved_contexts_file = f;
     }
     size_t buf_size = data->context_buf_cnt * sizeof(data->context_buf[0]);
-    size_t num_written = dr_write_file(saved_contexts_file, data->context_buf, buf_size);
+    size_t num_written = dr_write_file(data->saved_contexts_file, data->context_buf, buf_size);
     if (num_written != buf_size) {
         dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
     }
@@ -747,7 +766,7 @@ flush_saved_traces(void *drcontext)
 
     dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
 
-    memset(data->buf_base, 0, MEM_BUF_SIZE);
+    memset(data->buf_base, 0, INS_BUF_SIZE);
     data->buf_ptr = data->buf_base;
 }
 
@@ -810,7 +829,12 @@ clean_call_save_memory(size_t pc)
         memcpy((void*)saved_memory.data, (void*)saved_memory.start_addr, saved_memory.size);
         dr_switch_to_dr_state(drcontext);
 
-        saved_memories.push_back(saved_memory);
+        // saved_memories.push_back(saved_memory);
+        // check if the buffer is full
+        if (data->memory_buf_cnt >= MAX_NUM_MEM)
+            flush_saved_contexts(data);
+        // save context in buffer
+        data->memory_buf[data->memory_buf_cnt++] = saved_memory;
     }
 #else
     if (saved_stack_start == -1 || saved_stack_end == -1) {
