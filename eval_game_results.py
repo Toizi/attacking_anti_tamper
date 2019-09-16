@@ -1,11 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """creates evaluations of voglperf benchmark logs"""
 
 from __future__ import print_function
 import argparse
 import os
-import subprocess
 import traceback
 import tempfile
 import shutil
@@ -13,41 +12,9 @@ import json
 from glob import glob
 from collections import namedtuple
 from pprint import pformat, pprint
-from multiprocessing import cpu_count
-from multiprocessing.pool import Pool
-class KeyboardInterruptError(Exception): pass
+import matplotlib.pyplot as plt
+import numpy as np
 
-class EvalSample:
-
-    def __init__(self, base_path, obfuscations, build_dir):
-        self.base_path = base_path
-        self.original_path = '{}+none'.format(base_path)
-        self.build_path = os.path.join(build_dir, os.path.basename(self.base_path))
-        self.obfuscations = [ Obfuscation(obf, self.build_path, self.base_path) for obf in obfuscations ]
-    
-    def __str__(self):
-        s = """base_path: {}\noriginal_path: {}\nobfuscations: {}""".format(
-            self.base_path, self.original_path, self.obfuscations)
-        return s
-    
-
-class Obfuscation:
-
-    def __init__(self, options, base_build_path, base_path):
-        self.options = options
-        self.options_str = '-'.join(self.options)
-        self.build_path = os.path.join(base_build_path, self.options_str)
-        self.original_path = '{}+{}'.format(base_path, self.options_str)
-        self.report_path = os.path.join(self.build_path, 'report.json')
-        self.cracked_path = os.path.join(self.build_path, 'bin_cracked')
-        self.patched_path = os.path.join(self.build_path, 'bin_patched_cracked')
-        self.log_path = os.path.join(self.build_path, 'log.txt')
-        self.cmdline_path = os.path.join(self.build_path, 'cmdline.txt')
-    
-    def __str__(self):
-        # s = """{}""".format()
-        s = pformat(self)
-        return s
 games = {
     'sauerbraten': {
         'binary_name': 'sauer-client'
@@ -73,7 +40,6 @@ def parse_args(argv):
     parser.add_argument("--binary-dir",
         help="directory where the binaries reside that were used to create the benchmarks",
         required=True)
-    parser.add_argument("-j", "--process-count", type=int)
     parser.add_argument("input_dir", type=str)
 
     args = parser.parse_args(argv)
@@ -82,35 +48,12 @@ def parse_args(argv):
     if args.input_dir[-1] != os.path.sep:
         args.input_dir += os.path.sep
     
-    # parallel run by default
-    if args.process_count is None:
-        args.process_count = cpu_count()
-    
     # create input_eval directory if no output specified
     if not args.output:
         args.output = os.path.abspath(args.input_dir) + '_eval'
     
     return args
 
-def run_cmd(cmd, log_file=None):
-    try:
-        subprocess.check_call(shlex.split(cmd) if cmd is str else cmd,
-            stdout=log_file,
-            stderr=log_file)
-        return True
-    except subprocess.CalledProcessError:
-        traceback.print_exc()
-    except OSError:
-        traceback.print_exc()
-        print("  command: {}".format(cmd))
-    return False
-
-
-def setup_environment():
-    global RUN_PATH
-    mydir = os.path.dirname(os.path.abspath(__file__))
-    RUN_PATH = os.path.join(mydir, 'run.py')
-    return True
 
 def get_samples(input_dir, game):
     input_files = glob(input_dir + 'voglperf.{}*.csv'.format(game['binary_name']))
@@ -133,75 +76,6 @@ def get_samples(input_dir, game):
     return samples
 
 
-def run_obfuscation(obfuscation):
-    # args has been made global in pool
-    try:
-        # create build dir for obfuscation
-        os.mkdir(obfuscation.build_path)
-        # create symlink for easier debugging
-        os.symlink(os.path.abspath(obfuscation.original_path), os.path.join(obfuscation.build_path, 'bin'))
-
-        # run the taint attack to patch and crack the binary
-        input_arg = None if not args.input else ['--input', args.input]
-        cmd = [ RUN_PATH,
-            "--crack-function", args.crack_function,
-            "--report-path", obfuscation.report_path,
-            "-o", obfuscation.patched_path,
-            "--crack-only-output", obfuscation.cracked_path,
-            "--build-dir", obfuscation.build_path,
-            "--taint-backend", "cpp",
-            "--cleanup",
-            obfuscation.original_path
-        ]
-        if input_arg:
-            cmd.extend(input_arg)
-
-        # store cmdline for easier debugging
-        with open(obfuscation.cmdline_path, 'w') as f:
-            f.write("{} > {}\n".format(' '.join(cmd), obfuscation.log_path))
-
-        if args.verbose or args.print_only:
-            print("running {} > {}".format(' '.join(cmd), obfuscation.log_path))
-            if args.print_only:
-                return True
-        with open(obfuscation.log_path, 'w') as log:
-            success = run_cmd(cmd, log)
-            if not success:
-                print('[-] error running cmd {}, see {} for output'.format(cmd, obfuscation.log_path))
-                return False
-        return True
-    except KeyboardInterrupt:
-        raise KeyboardInterruptError()
-    return False
-
-def run_sample(sample, pool):
-
-    # create build dir for sample
-    os.mkdir(sample.build_path)
-
-    results = []
-    # run each obfuscation in a process from the pool
-    for obfuscation in sample.obfuscations:
-        results.append(pool.apply_async(run_obfuscation, (obfuscation,)))
-    return results
-
-    
-def get_sample_report(sample):
-    reports = dict()
-    for obfuscation in sample.obfuscations:
-        try:
-            with open(obfuscation.report_path, 'r') as f:
-                reports[obfuscation.options_str] = json.load(f)
-                reports[obfuscation.options_str]['build_path'] = obfuscation.build_path
-        except KeyboardInterrupt:
-            raise
-        except:
-            print("exception in get_sample_report. continuing regardless")
-            continue
-    
-
-    return reports
-
 def compute_basic_numbers(sample_dict):
     fpath = sample_dict['log_path']
     with open(fpath, 'r') as f:
@@ -221,15 +95,94 @@ def compute_basic_numbers(sample_dict):
     sample_dict['average_99pctl'] = sum(frame_times[:frame_times_99pctl_idx]) / frame_times_99pctl_idx
     sample_dict['maximum_99pctl'] = frame_times[frame_times_99pctl_idx - 1]
 
+def compute_comparison(sample_dict, base_sample):
+    for measurement in ('average', 'maximum', 'minimum', 'median', 'average_99pctl', 'maximum_99pctl', 'binary_size'):
+        sample_dict[measurement + '_relative'] = sample_dict[measurement] / base_sample[measurement] - 1.0
+
 def analyze_samples(args, samples):
     # Dict{obfuscation_str: Dict{'path': path_to_csv}}
+
+    # get basic numbers for each sample
     for obf_str, sample in samples.items():
         sample['binary_path'] = os.path.join(args.binary_dir, sample['binary_name'])
         stat = os.stat(sample['binary_path'])
-        sample['binary_size'] = stat.st_size
+        sample['binary_size'] = float(stat.st_size)
         compute_basic_numbers(sample)
+    
+    # compare it to the baseline of no obfuscation
+    base_sample = samples['none']
+    for obf_str, sample in samples.items():
+        compute_comparison(sample, base_sample)
 
     return True
+
+def generate_graphs(args, samples):
+    figures = {}
+
+    # how wide the bars should be. bar_width * len(coverages) should be less
+    # than 1 to avoid overlapping
+    bar_width = 0.15
+
+    # the coverages and obfuscations to plot
+    coverages = ['0', '10', '20']
+    obfuscations = ['opaque', 'subst', 'indir', 'flatten']#, 'virt']
+
+    # map obfuscations to positions on the chart
+    x_start_pos = np.arange(len(obfuscations))
+    xticks = [r + bar_width for r in range(len(obfuscations))]
+    xticks_virt = [r + bar_width for r in range(1)]
+
+    # performance graphs
+    for label_name, measurement in [('maximum 99pctl', 'maximum_99pctl_relative'),
+        ('median', 'median_relative')]:
+        fig = plt.figure()
+        fig.suptitle('{} frame times'.format(label_name))
+        ax = fig.add_subplot(111,
+            yscale='linear',
+            xlabel='applied obfuscation',
+            ylabel='relative overhead',
+            xticks=xticks,
+            xticklabels=obfuscations)
+        # ax.set_xticks(, obfuscations)
+        # ax.set_ylim(bottom=0)
+
+        for i, coverage in enumerate(coverages):
+            y = [samples[obf_str + '.' + coverage][measurement] for obf_str in obfuscations]
+            ax.bar([x + (i * bar_width) for x in x_start_pos],
+                y,
+                width=bar_width,
+                label='{}% coverage'.format(coverage))
+                # label='{} {}%'.format(label_name, coverage))
+        # fig.legend()
+        # figures['performance_' + measurement] = fig
+
+        # ax = fig.add_subplot(122,
+        #     xticks=xticks_virt,
+        #     xticklabels=['virt'])
+        # for i, coverage in enumerate(coverages):
+        #     y = [samples[obf_str + '.' + coverage][measurement] for obf_str in ['virt']]
+        #     ax.bar([i* bar_width],
+        #         y,
+        #         width=bar_width,
+        #         label='{} {}%'.format(label_name, coverage))
+        fig.legend()
+        figures['performance_virt_' + measurement] = fig
+
+    # # do virt on its own since the measurements are so much higher
+    # for label_name, measurement in [('maximum 99pctl', 'maximum_99pctl_relative'),
+    #     ('median', 'median_relative')]:
+    #     fig = plt.figure()
+    #     fig.suptitle('frame times overhead relative to no obfuscation')
+    #     ax = fig.add_subplot(111)
+
+    #     x = ['virt']
+    #     for coverage in ('0', '10', '20'):
+    #         y = [samples[obf_str + '.' + coverage][measurement] for obf_str in x]
+    #         ax.bar(x, y, label='{} {}%'.format(label_name, coverage))
+    #     fig.legend()
+    #     figures['performance_virt_' + measurement] = fig
+
+    return figures
 
 
 def run(args):
@@ -255,23 +208,27 @@ def run(args):
         return False
     
     pprint(samples)
+
+    print('[*] generate_graphs')
+    graphs = generate_graphs(args, samples)
+    if not graphs:
+        print('[-] generate_graphs')
+        return False
     
-    # if args.output:
-    #     if args.verbose:
-    #         print('[*] creating report {}'.format(args.output))
-    #     with open(args.output, 'w') as f:
-    #         json.dump(analysis, f, indent=2)
-    # else:
-    #     pprint(analysis)
+    if not os.path.exists(args.output):
+        os.mkdir(args.output)
+    print('[*] saving figures at {:s}'.format(args.output))
+    for name, figure in graphs.items():
+        figure_path = os.path.join(args.output, name + '.pdf')
+        if args.verbose:
+            print('[*] creating figure {}'.format(figure_path))
+        figure.savefig(figure_path)
     
     return True
 
 
 def main(argv):
     args = parse_args(argv)
-    if not setup_environment():
-        return False
-
     success = run(args)
 
     # print('[*] intermediate results: {}'.format(build_dir))
