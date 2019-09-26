@@ -14,7 +14,7 @@ if (NOT DynamoRIO_FOUND)
 endif(NOT DynamoRIO_FOUND)
 configure_DynamoRIO_client(instrace_x86)
 
-set (extensions "drmgr_static;drreg_static;drx_static")
+set (extensions "drmgr_static;drreg_static;drx_static;drutil")
 foreach (ext ${extensions})
   use_DynamoRIO_extension(instrace_x86 ${ext})
 endforeach()

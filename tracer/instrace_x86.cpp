@@ -54,6 +54,7 @@
 #include "drmgr.h"
 #include "drreg.h"
 #include "dr_tools.h"
+#include "drutil.h"
 // #include "droption.h"
 #include "utils.h"
 
@@ -113,7 +114,7 @@ typedef struct {
 
     size_t fs;
 } saved_context_t;
-#define MAX_NUM_CTX 4096
+#define MAX_NUM_CTX 1024
 #define CTX_BUF_SIZE (sizeof(saved_context_t) * MAX_NUM_CTX)
 
 typedef struct {
@@ -123,7 +124,7 @@ typedef struct {
     // must be freed with dr_global_free(data, len)
     const char *data;
 } saved_memory_t;
-#define MAX_NUM_MEM 4096
+#define MAX_NUM_MEM 256
 #define MEM_BUF_SIZE (sizeof(saved_memory_t) * MAX_NUM_MEM)
 
 /* Thread-private data */
@@ -146,7 +147,7 @@ typedef struct {
 } per_thread_t;
 
 
-
+static thread_id_t instrumented_thread_id = 0;
 static size_t page_size;
 static client_id_t client_id;
 static int tls_index;
@@ -183,8 +184,14 @@ static void
 flush_saved_contexts(per_thread_t*);
 static void
 flush_saved_modules();
+static bool
+event_filter_syscall(void*, int);
+static bool
+event_pre_syscall(void*, int);
 static void
-clean_call_save_memory(size_t);
+event_post_syscall(void*, int);
+static void
+clean_call_save_memory(size_t, uint16_t);
 static void
 clean_call_save_context(size_t);
 static void
@@ -251,14 +258,17 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
                        "http://dynamorio.org/issues");
     disassemble_set_syntax(DR_DISASM_INTEL);
     page_size = dr_page_size();
-    if (!drmgr_init() || drreg_init(&ops) != DRREG_SUCCESS)
+    if (!drmgr_init() || drreg_init(&ops) != DRREG_SUCCESS || !drutil_init())
         DR_ASSERT(false);
     client_id = id;
     dr_register_exit_event(event_exit);
+    dr_register_filter_syscall_event(event_filter_syscall);
     if (!drmgr_register_thread_init_event(event_thread_init) ||
         !drmgr_register_thread_exit_event(event_thread_exit) ||
         !drmgr_register_bb_instrumentation_event(NULL /*analysis func*/, event_bb_insert,
                                                  &priority) ||
+        !drmgr_register_post_syscall_event(event_post_syscall) ||
+        !drmgr_register_pre_syscall_event(event_pre_syscall) ||
         !drmgr_register_module_load_event(event_module_load)) {
         /* something is wrong: can't continue */
         DR_ASSERT(false);
@@ -324,6 +334,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 static void
 event_exit()
 {
+    dr_printf("event_exit\n");
 #ifdef SHOW_RESULTS
     char msg[512];
     int len;
@@ -336,10 +347,14 @@ event_exit()
     DISPLAY_STRING(msg);
 #endif /* SHOW_RESULTS */
 
+    drutil_exit();
     if (!drmgr_unregister_tls_field(tls_index) ||
         !drmgr_unregister_thread_init_event(event_thread_init) ||
         !drmgr_unregister_thread_exit_event(event_thread_exit) ||
         !drmgr_unregister_bb_insertion_event(event_bb_insert) ||
+        !dr_unregister_filter_syscall_event(event_filter_syscall) ||
+        // !drmgr_unregister_post_syscall_event(event_post_syscall) ||
+        !drmgr_unregister_pre_syscall_event(event_pre_syscall) ||
         !drmgr_unregister_module_load_event(event_module_load) ||
         drreg_exit() != DRREG_SUCCESS)
         DR_ASSERT(false);
@@ -357,10 +372,14 @@ event_exit()
 static void
 event_thread_init(void *drcontext)
 {
-    per_thread_t *data;
+    if (instrumented_thread_id == 0)
+        instrumented_thread_id = dr_get_thread_id(drcontext);
+    else
+        return;
 
+    dr_printf("tracing only thread with id: %d\n", dr_get_thread_id(drcontext));
     /* allocate thread private data */
-    data = (per_thread_t*)dr_thread_alloc(drcontext, sizeof(per_thread_t));
+    per_thread_t *data = (per_thread_t*)dr_thread_alloc(drcontext, sizeof(per_thread_t));
     drmgr_set_tls_field(drcontext, tls_index, data);
     data->buf_base = (char*)dr_thread_alloc(drcontext, INS_BUF_SIZE);
     data->buf_ptr = data->buf_base;
@@ -403,6 +422,11 @@ event_thread_init(void *drcontext)
 static void
 event_thread_exit(void *drcontext)
 {
+    thread_id_t id = dr_get_thread_id(drcontext);
+    dr_printf("event_thread_exit %d\n", id);
+    if (id != instrumented_thread_id)
+        return;
+    dr_printf("event_thread_exit in main thread\n");
     per_thread_t *data;
 
     flush_saved_traces(drcontext);
@@ -442,6 +466,9 @@ static void
 dump_mapped_memory()
 {
     void *drcontext = dr_get_current_drcontext();
+    if (instrumented_thread_id != dr_get_thread_id(drcontext))
+        return;
+
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
     mcontext.flags = DR_MC_ALL;
@@ -532,11 +559,40 @@ dump_mapped_memory()
 }
 
 static void
-insert_save_memory(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc)
+insert_save_memory(void *drcontext, instrlist_t *ilist, instr_t *where, instr_t *mem_inst)
 {
+    reg_id_t regaddr;
+    reg_id_t scratch;
+    bool success;
+
+    if (drreg_reserve_aflags(drcontext, ilist, where) != DRREG_SUCCESS ||
+        drreg_reserve_register(drcontext, ilist, where, nullptr, &regaddr) !=
+            DRREG_SUCCESS ||
+        drreg_reserve_register(drcontext, ilist, where, nullptr, &scratch) !=
+            DRREG_SUCCESS)
+    {
+        DR_ASSERT(false);
+        return;
+    }
+
+    opnd_t dst = instr_get_dst(mem_inst, 0);
+    success = drutil_insert_get_mem_addr(drcontext, ilist, where, dst, regaddr,
+                                         scratch);
+    DR_ASSERT(success);
     dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call_save_memory, false,
-        // pass as argument the PC of the instruction
-        1, OPND_CREATE_INTPTR(pc));
+        // pass as argument the address of the written memory + the size
+        2,
+        opnd_create_reg(regaddr),
+        OPND_CREATE_INT16(drutil_opnd_mem_size_in_bytes(dst, mem_inst)));
+
+    if (drreg_unreserve_register(drcontext, ilist, where, regaddr) !=
+            DRREG_SUCCESS ||
+        drreg_unreserve_register(drcontext, ilist, where, scratch) !=
+            DRREG_SUCCESS ||
+        drreg_unreserve_aflags(drcontext, ilist, where) != DRREG_SUCCESS)
+    {
+        DR_ASSERT(false);
+    }
 }
 
 static void
@@ -549,7 +605,8 @@ insert_save_context(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc 
 
 
 static app_pc context_save_instr_pc = 0;
-static app_pc memory_save_instr_pc = 0;
+static instr_t *memory_save_instr = nullptr;
+static int memory_save_instr_op = 0;
 static app_pc xgetbv_instr_pc = 0;
 static app_pc cpuid_instr_pc = 0;
 static int instr_count = 0;
@@ -568,7 +625,8 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
     
     // dump state at entry point
     // DO NOT RETURN EARLY HERE. We still need to instrument every basic block
-    if (!initial_state_recorded && pc == main_entry_pc) {
+    // if (!initial_state_recorded && pc == main_entry_pc) {
+    if (!initial_state_recorded && pc == (app_pc)0x4411a0) {
         initial_state_recorded = true;
 
         dr_insert_clean_call(drcontext, bb, instr, (void *)dump_mapped_memory, false,
@@ -582,9 +640,9 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         insert_save_context(drcontext, bb, instr, context_save_instr_pc);
         context_save_instr_pc = 0;
     }
-    if (memory_save_instr_pc) {
-        insert_save_memory(drcontext, bb, instr, memory_save_instr_pc);
-        memory_save_instr_pc = 0;
+    if (memory_save_instr) {
+        insert_save_memory(drcontext, bb, instr, memory_save_instr);
+        memory_save_instr = nullptr;
     }
     if (xgetbv_instr_pc) {
         dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_xgetbv_callback, false,
@@ -605,7 +663,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
     int opc = instr_get_opcode(instr);
     bool dbg_dump = false; // pc == (app_pc)0x7ffccbb56e16;
     if (opc == OP_cpuid || opc == OP_xgetbv //|| uses_tls_segment || writes_tls_segment
-        || opc == OP_syscall || opc == OP_sysenter
+        // || opc == OP_syscall || opc == OP_sysenter
         || opc == OP_rdtsc || opc == OP_rdtscp
         || opc == OP_rdrand
         // || opc == OP_vpmovmskb
@@ -616,6 +674,8 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         || opc == OP_vmovd
         || opc == OP_vpxor
         || opc == OP_vpbroadcastb
+        || opc == OP_fnstcw
+        || opc == OP_cvtsd2ss
         || dbg_dump) {
         if (opc == OP_xgetbv)
             xgetbv_instr_pc = pc;
@@ -628,9 +688,15 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         char buf[128];
         instr_disassemble_to_buffer(drcontext, instr, buf, sizeof(buf));
         context_save_instr_pc = pc;
-        memory_save_instr_pc = opc == OP_syscall || opc == OP_sysenter || instr_writes_memory(instr) || dbg_dump ? pc : 0;
+        memory_save_instr = opc == instr_writes_memory(instr) || dbg_dump ? instr : nullptr;
+        // if (opc == OP_syscall || opc == OP_sysenter) {
+        //     dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_prepare_syscall, false,
+        //         // pass as argument the PC of the instruction
+        //         0);
+        // }
+        memory_save_instr_op = opc;
         dr_printf("context%s_save_instr %#zx %d %s\n",
-            memory_save_instr_pc != 0 ? "/memory" : "", context_save_instr_pc, instr_count, buf);
+            memory_save_instr != nullptr ? "/memory" : "", context_save_instr_pc, instr_count, buf);
     }
 
     dr_insert_clean_call(drcontext, bb, instr, (void *)clean_call_trace, false,
@@ -647,6 +713,7 @@ save_context(void *drcontext, dr_mcontext_t *mcontext)
     per_thread_t *data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
     saved_context_t s;
     s.instr_num = data->instr_count - 1;
+    dr_printf("runtime save_context instr_count: %lld rip: %#p\n", data->instr_count - 1, mcontext->rip);
 
     s.xdi = (size_t)mcontext->xdi;
     s.xsi = (size_t)mcontext->xsi;
@@ -777,10 +844,12 @@ clean_call_trace(size_t pc)
     if (!initial_state_recorded)
         return;
 
-    per_thread_t *data;
-
     void *drcontext = dr_get_current_drcontext();
-    data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
+
+    if (instrumented_thread_id != dr_get_thread_id(drcontext))
+        return;
+
+    per_thread_t *data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
 
     data->instr_count += 1;
     *(size_t*)(data->buf_ptr) = pc;
@@ -789,15 +858,25 @@ clean_call_trace(size_t pc)
         flush_saved_traces(drcontext);
 }
 
+size_t mem_to_save_addr = 0;
+size_t mem_to_save_size = 0;
 static void
-clean_call_save_memory(size_t pc)
+clean_call_save_memory(size_t mem_to_save_addr, uint16_t mem_to_save_size)
 {
-    (void)pc;
     // only save memory once the entry point has been reached
     if (!initial_state_recorded)
         return;
+    
+    // if no save memory addr/size has been specified in the prepare syscall
+    // step we don't save memory
+    if (mem_to_save_addr == 0 || mem_to_save_size == 0)
+        return;
 
     void *drcontext = dr_get_current_drcontext();
+
+    if (instrumented_thread_id != dr_get_thread_id(drcontext))
+        return;
+
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
     mcontext.flags = DR_MC_ALL;
@@ -806,8 +885,45 @@ clean_call_save_memory(size_t pc)
         return;
     }
 
+    dr_printf("saving memory\n");
     per_thread_t *data = (per_thread_t*)drmgr_get_tls_field(drcontext, tls_index);
 #ifndef MEMORY_SAVE_STACK_ONLY
+#if 1
+    // query the entire address space and save anything that looks like data
+    byte *addr = (byte*)mem_to_save_addr;
+    byte *max_addr = addr + mem_to_save_size;
+    dr_mem_info_t mem_info = { 0 };
+    while (dr_query_memory_ex(addr, &mem_info) && mem_info.type != DR_MEMTYPE_ERROR_WINKERNEL && addr != (byte*)-1 && addr < max_addr) {
+        // dr_printf("dr_query_memory_ex = %#zx, type %x,  prot %x, internal %d\n", addr, mem_info.type, mem_info.prot, dr_memory_is_dr_internal(addr));
+        addr = mem_info.base_pc + mem_info.size;
+        // only interested in data that can be written to since read only data should not change
+        // if (mem_info.type != DR_MEMTYPE_DATA || mem_info.prot != (DR_MEMPROT_READ | DR_MEMPROT_WRITE) || dr_memory_is_dr_internal(addr))
+        if ((mem_info.prot & (DR_MEMPROT_GUARD | DR_MEMPROT_EXEC | DR_MEMPROT_VDSO)) != 0 || (mem_info.prot & DR_MEMPROT_READ) == 0 || dr_memory_is_dr_internal(addr))
+            continue;
+        
+        saved_memory_t saved_memory = { 0 };
+        saved_memory.trace_addr = data->instr_count - 1;
+        saved_memory.start_addr = mem_to_save_addr;
+        // only save as much as we need to in case the max address is inside the current region
+        if (mem_info.base_pc + mem_info.size >= max_addr)
+            saved_memory.size = mem_to_save_size;
+        // in case it contains more than the current segment
+        else
+            saved_memory.size = mem_info.size - (mem_to_save_addr - (size_t)mem_info.base_pc);
+        saved_memory.data = (const char*)dr_global_alloc(saved_memory.size);
+
+        dr_switch_to_app_state(drcontext);
+        memcpy((void*)saved_memory.data, (void*)saved_memory.start_addr, saved_memory.size);
+        dr_switch_to_dr_state(drcontext);
+
+        // saved_memories.push_back(saved_memory);
+        // check if the buffer is full
+        if (data->memory_buf_cnt >= MAX_NUM_MEM)
+            flush_saved_memories(data);
+        // save context in buffer
+        data->memory_buf[data->memory_buf_cnt++] = saved_memory;
+    }
+#else
     // query the entire address space and save anything that looks like data
     byte *addr = 0;
     dr_mem_info_t mem_info = { 0 };
@@ -832,10 +948,11 @@ clean_call_save_memory(size_t pc)
         // saved_memories.push_back(saved_memory);
         // check if the buffer is full
         if (data->memory_buf_cnt >= MAX_NUM_MEM)
-            flush_saved_contexts(data);
+            flush_saved_memories(data);
         // save context in buffer
         data->memory_buf[data->memory_buf_cnt++] = saved_memory;
     }
+#endif
 #else
     if (saved_stack_start == -1 || saved_stack_end == -1) {
         dr_printf("saved_stack bounds invalid: %#zx - %#zx\n", saved_stack_start, saved_stack_end);
@@ -856,6 +973,103 @@ clean_call_save_memory(size_t pc)
         dr_printf("dr_set_mcontext failed\n");
         dr_abort();
     }
+    mem_to_save_addr = 0;
+    mem_to_save_size = 0;
+}
+
+static bool
+event_filter_syscall(void *drcontext, int sysnum)
+{
+    (void)drcontext;
+    (void)sysnum;
+    // we need to filter all of the syscalls for context saving and sometimes memory saving
+    return true;
+}
+
+#include <sys/stat.h>
+static bool
+event_pre_syscall(void *drcontext, int sysnum)
+{
+    (void)drcontext;
+    // only save memory once the entry point has been reached
+    // if (!initial_state_recorded)
+    //     return false;
+
+    // if (instrumented_thread_id != dr_get_thread_id(drcontext))
+    //     return false;
+
+    // bool ret = false;
+    switch (sysnum) {
+        // read
+        case 0: {
+            dr_mcontext_t mcontext = { 0 };
+            mcontext.size = sizeof(dr_mcontext_t);
+            mcontext.flags = DR_MC_ALL;
+            if (!dr_get_mcontext(drcontext, &mcontext)) {
+                dr_printf("dr_get_mcontext failed\n");
+                break;
+            }
+            mem_to_save_addr = mcontext.rsi;
+            mem_to_save_size = mcontext.rdx;
+            // ret = true;
+            break;
+        }
+        // stat, fstat, lstat
+        case 4:
+        case 5:
+        case 6: {
+            dr_mcontext_t mcontext = { 0 };
+            mcontext.size = sizeof(dr_mcontext_t);
+            mcontext.flags = DR_MC_ALL;
+            if (!dr_get_mcontext(drcontext, &mcontext)) {
+                dr_printf("dr_get_mcontext failed\n");
+                break;
+            }
+            mem_to_save_addr = mcontext.rsi;
+            mem_to_save_size = sizeof(struct stat);
+            // ret = true;
+            break;
+        }
+        default:
+            break;
+    }
+    // dr_printf("event_pre_syscall %d = %d\n", sysnum, ret);
+    return true;
+}
+
+static bool
+sys_is_memory_save(int sysnum)
+{
+    switch (sysnum) {
+        // read
+        case 0:
+        // stat, fstat, lstat
+        case 4:
+        case 5:
+        case 6:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void
+event_post_syscall(void *drcontext, int sysnum)
+{
+    dr_mcontext_t mcontext = { 0 };
+    mcontext.size = sizeof(dr_mcontext_t);
+    mcontext.flags = DR_MC_CONTROL;
+    if (!dr_get_mcontext(drcontext, &mcontext)) {
+        dr_printf("dr_get_mcontext failed\n");
+        return;
+    }
+    // not a nice way to handle passing the PC but sysenter and syscall are both
+    // 2 bytes long so it works
+    clean_call_save_context((size_t)mcontext.rip - 2);
+    if (!sys_is_memory_save(sysnum))
+        return;
+    dr_printf("event_post_syscall %d\n", sysnum);
+    clean_call_save_memory(mem_to_save_addr, mem_to_save_size);
 }
 
 static void
@@ -863,8 +1077,12 @@ clean_call_save_context(size_t pc)
 {
     if (!initial_state_recorded)
         return;
-
+    
     void *drcontext = dr_get_current_drcontext();
+
+    if (instrumented_thread_id != dr_get_thread_id(drcontext))
+        return;
+
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
     mcontext.flags = DR_MC_ALL;
@@ -887,6 +1105,8 @@ clean_call_xgetbv_callback(size_t pc)
 
     (void)pc;
     void *drcontext = dr_get_current_drcontext();
+    if (instrumented_thread_id != dr_get_thread_id(drcontext))
+        return;
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
     mcontext.flags = DR_MC_INTEGER;
@@ -901,6 +1121,11 @@ clean_call_xgetbv_callback(size_t pc)
         mcontext.rax = mcontext.rax & ~0x6;
         dr_set_mcontext(drcontext, &mcontext);
     }
+    if ((mcontext.rax & 0x7) == 0x7) {
+        dr_printf("eax & 0x7, removing bit\n");
+        mcontext.rax = mcontext.rax & ~0x7;
+        dr_set_mcontext(drcontext, &mcontext);
+    }
 }
 
 static uint32_t cpuid_eax_arg = 0;
@@ -909,6 +1134,8 @@ clean_call_cpuid_callback_before(size_t pc)
 {
     (void)pc;
     void *drcontext = dr_get_current_drcontext();
+    if (instrumented_thread_id != dr_get_thread_id(drcontext))
+        return;
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
     mcontext.flags = DR_MC_INTEGER;
@@ -921,17 +1148,22 @@ clean_call_cpuid_callback_before(size_t pc)
     cpuid_eax_arg = (uint32_t)mcontext.rax;
 }
 
+// https://wiki.osdev.org/SSE
 #define SSE2_BIT (1 << 26)
+#define SSE3_BIT (1 << 0)
+#define SSSE3_BIT (1 << 9)
+#define SSE41_BIT (1 << 19)
+#define SSE42_BIT (1 << 20)
 static void
 clean_call_cpuid_callback_after(size_t pc)
 {
     (void)pc;
-    // if (!initial_state_recorded)
-    //     return;
     if (cpuid_eax_arg != 1)
         return;
 
     void *drcontext = dr_get_current_drcontext();
+    if (instrumented_thread_id != dr_get_thread_id(drcontext))
+        return;
     dr_mcontext_t mcontext = { 0 };
     mcontext.size = sizeof(dr_mcontext_t);
     mcontext.flags = DR_MC_INTEGER;
@@ -941,9 +1173,32 @@ clean_call_cpuid_callback_after(size_t pc)
         return;
     }
 
+    bool modified = false;
     if ((mcontext.rdx & SSE2_BIT) == SSE2_BIT) {
         dr_printf("SSE2_BIT set, removing it\n");
         mcontext.rdx = mcontext.rdx & ~SSE2_BIT;
-        dr_set_mcontext(drcontext, &mcontext);
+        modified = true;
     }
+    if ((mcontext.rcx & SSE3_BIT) == SSE3_BIT) {
+        dr_printf("SSE3_BIT set, removing it\n");
+        mcontext.rcx = mcontext.rcx & ~SSE3_BIT;
+        modified = true;
+    }
+    if ((mcontext.rcx & SSSE3_BIT) == SSSE3_BIT) {
+        dr_printf("SSSE3_BIT set, removing it\n");
+        mcontext.rcx = mcontext.rcx & ~SSSE3_BIT;
+        modified = true;
+    }
+    if ((mcontext.rcx & SSE41_BIT) == SSE41_BIT) {
+        dr_printf("SSE41_BIT set, removing it\n");
+        mcontext.rcx = mcontext.rcx & ~SSE41_BIT;
+        modified = true;
+    }
+    if ((mcontext.rcx & SSE42_BIT) == SSE42_BIT) {
+        dr_printf("SSE42_BIT set, removing it\n");
+        mcontext.rcx = mcontext.rcx & ~SSE42_BIT;
+        modified = true;
+    }
+    if (modified)
+        dr_set_mcontext(drcontext, &mcontext);
 }
