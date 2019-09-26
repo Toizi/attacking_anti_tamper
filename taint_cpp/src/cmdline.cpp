@@ -8,8 +8,12 @@ bool parse_args(int argc, char **argv, cmd_args &args) {
     auto cli = (
         clipp::option("-v", "--verbose").set(args.verbose)
             .doc("print debugging output"),
+        clipp::option("--fail-emulation-allowed").set(args.fail_emulation_allowed)
+            .doc("continue with generating patch with the instructions that were found even if the emulation failed"),
         (clipp::required("--json-output") & clipp::value("json_output", args.json_output_path))
             .doc("output path of json file containing patches"),
+        (clipp::option("--text-section") & clipp::value("text_section", args.text_section_raw))
+            .doc("text section address,size (used for selective tainting)"),
         // (clipp::option("-o", "--output") & clipp::value("outfile", args.output_path))
         //     .doc("output path"),
         // (clipp::option("-b", "--binary") & clipp::value("binary", args.input_binary))

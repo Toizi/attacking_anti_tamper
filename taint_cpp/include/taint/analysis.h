@@ -3,6 +3,7 @@
 #include <keystone/keystone.h>
 #include <triton/x86Specifications.hpp>
 #include <vector>
+#include <memory>
 #include <taint/serialization.h>
 
 struct Patch {
@@ -38,7 +39,7 @@ private:
 public:
     void set_debug(bool dbg);
     // saved_instructions_t &get_tainted_instructions() { return *saved_instructions; }
-    bool setup_context(std::vector<saved_module_t> &modules);
+    bool setup_context(std::vector<saved_module_t> &modules, size_t txt_start, size_t txt_end);
     bool emulate(const std::vector<uint64_t> &trace, std::vector<saved_context_t *> &contexts,
                                   std::vector<saved_memory_t *> &memories);
     std::vector<std::unique_ptr<Patch>> create_patch();

@@ -34,6 +34,8 @@ std::vector<triton::arch::x86::instruction_e> TaintAnalysis::skipped_instruction
         triton::arch::x86::ID_INS_XSAVE,
         triton::arch::x86::ID_INS_XSTORE,
         triton::arch::x86::ID_INS_XRSTOR,
+        triton::arch::x86::ID_INS_FNSTCW,
+        triton::arch::x86::ID_INS_CVTSD2SS,
 };
 
 void TaintAnalysis::set_debug(bool dbg)
@@ -104,7 +106,24 @@ bool TaintAnalysis::addr_in_main_module(uint64_t addr)
     return false;
 }
 
-bool TaintAnalysis::setup_context(std::vector<saved_module_t> &modules)
+// underapproximate the mem access
+static size_t align_mem_access(size_t access_size) {
+    if (access_size <= 2)
+        return access_size;
+    if (access_size < 4)
+        return 2;
+    if (access_size < 8)
+        return 4;
+    if (access_size < 16)
+        return 8;
+    if (access_size < 32)
+        return 16;
+    if (access_size < 64)
+        return 32;
+    return 64;
+}
+
+bool TaintAnalysis::setup_context(std::vector<saved_module_t> &modules, size_t text_section_start, size_t text_section_end)
 {
     api.reset();
     api.setArchitecture(triton::arch::ARCH_X86_64);
@@ -123,11 +142,18 @@ bool TaintAnalysis::setup_context(std::vector<saved_module_t> &modules)
         if (mod.is_main)
         {
             main_mem_tainted = true;
-            fmt::print("[*] Taining main module memory {:#x} - {:#x}\n", mod.start, mod.end);
+            size_t taint_start = mod.start;
+            size_t taint_end = mod.end;
+            if (mod.start <= text_section_start && text_section_start < mod.end) {
+                taint_start = text_section_start;
+                taint_end = text_section_end;
+                fmt::print("[*] Tainting only text section\n");
+            }
+            fmt::print("[*] Tainting main module memory {:#x} - {:#x}\n", taint_start, taint_end);
             size_t taint_size = 64;
-            for (size_t i = mod.start; i < mod.end; i += taint_size)
+            for (size_t i = taint_start; i < taint_end; i += taint_size)
             {
-                api.setTaintMemory(triton::arch::MemoryAccess(i, taint_size), true);
+                api.setTaintMemory(triton::arch::MemoryAccess(i, align_mem_access(std::min(taint_size, taint_end - i))), true);
             }
             main_modules.push_back(mod);
         }
@@ -147,16 +173,33 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
     auto pc = trace[0];
     auto last_pc = pc;
 
+    contexts[0]->xip = pc;
     set_context(contexts[0], true);
     size_t context_pos = 1;
     size_t memory_pos = 0;
 
-    auto tainted_instrs_p = std::make_unique<saved_instructions_t>();
+    this->saved_instructions = std::make_unique<saved_instructions_t>();
     // better syntax
-    auto &tainted_instrs = *tainted_instrs_p;
+    auto &tainted_instrs = *this->saved_instructions;
+    // std::unordered_map<uint64_t, std::unique_ptr<triton::arch::Instruction>> cached_instructions;
     auto inst = triton::arch::Instruction();
     while (true)
     {
+        // auto cached_inst = cached_instructions.find(pc);
+        // bool reuse_inst = cached_inst != cached_instructions.end();
+        // triton::arch::Instruction *instp;
+        // if (reuse_inst) {
+        //     instp = cached_inst->second.get();
+        // } else {
+        //     instp = new triton::arch::Instruction();
+        //     // set instruction to emulate
+        //     instp->clear();
+        //     auto opcodes = api.getConcreteMemoryAreaValue(pc, 16, false);
+        //     instp->setOpcode(opcodes.data(), opcodes.size());
+        //     instp->setAddress(pc);
+        //     cached_instructions[pc] = std::unique_ptr<triton::arch::Instruction>{instp};
+        // }
+        // triton::arch::Instruction &inst = *instp;
         do
         {
             // set instruction to emulate
@@ -194,6 +237,9 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
                 if (pc != ctx->xip)
                 {
                     fmt::print(stderr, "[-] saved context wrong pc: {:#x} != {:#x}\n", pc, ctx->xip);
+                    // auto rsp_mem = api.getConcreteMemoryAreaValue(
+                    //     (uint64_t)api.getConcreteRegisterValue(api.registers.x86_rsp), 8, false);
+                    // fmt::print(stderr, "[D] rsp[0]: {:#x}\n", *(size_t*)rsp_mem.data());
                     return false;
                 }
                 set_context(ctx);
@@ -235,7 +281,7 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
         if (trace.size() <= trace_pos)
         {
             fmt::print("[+] reached end of trace. emulation done\n");
-            this->saved_instructions = std::move(tainted_instrs_p);
+            // this->saved_instructions = std::move(tainted_instrs_p);
             return true;
         }
 
@@ -329,42 +375,45 @@ TaintAnalysis::create_patch()
             patches.push_back(std::move(patch));
         }
         // cmov
-        else if (std::string instr_disas = instr.getDisassembly(); instr_disas.find("cmov") >= 0){
-            if (this->debug)
-                fmt::print("  is conditional move\n");
+        else {
+            std::string instr_disas = instr.getDisassembly();
+            if (instr_disas.find("cmov") != std::string::npos){
+                if (this->debug)
+                    fmt::print("  is conditional move\n");
 
-            auto patch = std::make_unique<Patch>();
-            patch->address = instr.getAddress();
-            if (instr.isConditionTaken())
-            {
-                std::string operands_str = instr_disas.substr(instr_disas.find(' ') + 1);
-                patch->asm_string = fmt::format("mov {}", operands_str);
-
-                unsigned char *data;
-                size_t data_len, stat_count;
-                if (ks_asm(ks, patch->asm_string.c_str(), instr.getAddress(), &data, &data_len, &stat_count))
+                auto patch = std::make_unique<Patch>();
+                patch->address = instr.getAddress();
+                if (instr.isConditionTaken())
                 {
-                    fmt::print(stderr, "ks_asm failed:\n {}\n", ks_errno(ks));
-                    goto cleanup;
+                    std::string operands_str = instr_disas.substr(instr_disas.find(' ') + 1);
+                    patch->asm_string = fmt::format("mov {}", operands_str);
+
+                    unsigned char *data;
+                    size_t data_len, stat_count;
+                    if (ks_asm(ks, patch->asm_string.c_str(), instr.getAddress(), &data, &data_len, &stat_count))
+                    {
+                        fmt::print(stderr, "ks_asm failed:\n {}\n", ks_errno(ks));
+                        goto cleanup;
+                    }
+                    for (int i = 0; i < instr.getSize(); ++i)
+                    {
+                        if (i < data_len)
+                            patch->data.push_back(data[i]);
+                        else
+                            patch->data.push_back('\x90');
+                    }
+                    free(data);
                 }
-                for (int i = 0; i < instr.getSize(); ++i)
+                else
                 {
-                    if (i < data_len)
-                        patch->data.push_back(data[i]);
-                    else
+                    patch->asm_string = "nop";
+                    for (int i = 0; i < instr.getSize(); ++i)
+                    {
                         patch->data.push_back('\x90');
+                    }
                 }
-                free(data);
+                patches.push_back(std::move(patch));
             }
-            else
-            {
-                patch->asm_string = "nop";
-                for (int i = 0; i < instr.getSize(); ++i)
-                {
-                    patch->data.push_back('\x90');
-                }
-            }
-            patches.push_back(std::move(patch));
         }
 
     loop_end:

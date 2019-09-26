@@ -89,12 +89,21 @@ int main(int argc, char **argv)
         modules.push_back(std::move(mod));
     }
 
+    size_t text_section_start = 0;
+    size_t text_section_end = 0;
+    if (!args.text_section_raw.empty()) {
+        auto delim_pos = args.text_section_raw.find(',');
+        fmt::print(stderr, args.text_section_raw);
+        text_section_start = stoull(args.text_section_raw.substr(0, delim_pos));
+        auto size_str = args.text_section_raw.substr(delim_pos + 1);
+        text_section_end = text_section_start + stoull(size_str);
+    }
 
     TaintAnalysis analysis;
     analysis.set_debug(args.verbose);
     // setup the memory/taint
     fmt::print("[*] setting up the context\n");
-    if (!analysis.setup_context(modules)) // modules are now owned by analysis
+    if (!analysis.setup_context(modules, text_section_start, text_section_end)) // modules are now owned by analysis
     {
         fmt::print(stderr, "failed setting up the context\n");
         return 1;
@@ -105,7 +114,11 @@ int main(int argc, char **argv)
     if (!analysis.emulate(trace, saved_contexts, saved_memories))
     {
         fmt::print(stderr, "failed emulation\n");
-        return 1;
+        if (args.fail_emulation_allowed) {
+            fmt::print(stderr, "continuing even though emulation failed\n");
+        } else {
+            return 1;
+        }
     }
 
     // get patch instructions from analysis
