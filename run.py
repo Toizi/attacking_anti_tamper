@@ -30,6 +30,9 @@ def parse_args(argv):
     parser.add_argument("-i", "--input",
         help="message that will be supplied to stdin of the binary when run",
         required=False)
+    parser.add_argument("--args",
+        help="arguments that will be supplied to the program",
+        required=False)
     parser.add_argument("-b", "--build-dir", required=False,
         help="directory that will be used for intermediate results")
     parser.add_argument("-r", "--report-path", required=False,
@@ -90,13 +93,14 @@ def run_binary(input_file, input_msg):
         print("  binary: {}".format(cmd))
     return False
 
-def run_tracer(input_file, input_msg, log_dir):
+def run_tracer(input_file, input_msg, log_dir, args):
     os.mkdir(log_dir)
     os.mkdir(os.path.join(log_dir, 'modules'))
-    cmd = '"{tracer}" -logdir {logdir} -- "{binary}"'.format(
+    cmd = '"{tracer}" -logdir {logdir} -- "{binary}" {args}'.format(
         tracer=TRACER_PATH,
         logdir=log_dir,
-        binary=input_file)
+        binary=input_file,
+        args=args)
     
     try:
         proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
@@ -127,8 +131,9 @@ def run_tracer(input_file, input_msg, log_dir):
         print(stderr_data)
     return success
 
-def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend):
+def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend, text_section):
 
+    text_section_arg = '--text-section {},{}'.format(text_section[0], text_section[1]) if text_section else ''
     if taint_backend == "python":
         cmd = [
             log_dir,
@@ -143,9 +148,12 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend)
     cmd = [
         TAINT_CPP_PATH,
         log_dir,
+        "--fail-emulation-allowed",
         "--json-output", patches_path,
         "-v"
     ]
+    if text_section_arg:
+        cmd.append(text_section_arg)
     if run_cmd(cmd) is not True:
         return False
 
@@ -198,6 +206,15 @@ def check_patch_success(crack_only_path, patched_path, input_msg, report_dict):
 
     return True
 
+from elftools.elf.elffile import ELFFile
+def get_text_section(binary_path):
+    with open(binary_path, 'rb') as f:
+        e = ELFFile(f)
+        for section in e.iter_sections():
+            if section.name == '.text':
+                return (section['sh_addr'], section['sh_size'])
+    return None
+
 
 def run(args, build_dir, track_time, report_dict):
     log_dir = os.path.join(build_dir, 'instrace_logs')
@@ -215,7 +232,7 @@ def run(args, build_dir, track_time, report_dict):
 
     print('[*] run_tracer')
     start_time = timer()
-    ret = run_tracer(args.input_file, args.input, log_dir)
+    ret = run_tracer(args.input_file, args.input, log_dir, args.args)
     report_dict['tracer'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'tracer_failed'
@@ -223,8 +240,9 @@ def run(args, build_dir, track_time, report_dict):
         return False
 
     print('[*] run_taint_attack')
+    text_section = get_text_section(args.input_file)
     start_time = timer()
-    ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir, args.taint_backend)
+    ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir, args.taint_backend, text_section)
     if args.cleanup:
         shutil.rmtree(log_dir, ignore_errors=True)
 
