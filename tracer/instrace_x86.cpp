@@ -151,6 +151,8 @@ static thread_id_t instrumented_thread_id = 0;
 static size_t page_size;
 static client_id_t client_id;
 static int tls_index;
+static std::string ctx_fname;
+static std::string mem_fname;
 // static file_t saved_contexts_file = INVALID_FILE;
 // static file_t saved_memories_file = INVALID_FILE;
 // static std::vector<saved_context_t> saved_contexts;
@@ -401,6 +403,27 @@ event_thread_init(void *drcontext)
      * the same directory as our library. We could also pass
      * in a path as a client argument.
      */
+
+    ctx_fname = logdir + "saved_contexts.bin";
+    if (data->saved_contexts_file == INVALID_FILE) {
+        file_t f = dr_open_file(ctx_fname.c_str(), DR_FILE_WRITE_OVERWRITE);
+        if (f == INVALID_FILE) {
+            dr_fprintf(STDERR, "Could not open file %s\n", ctx_fname.c_str());
+            return;
+        }
+        data->saved_contexts_file = f;
+    }
+
+    mem_fname = logdir + "saved_memories.bin";
+    if (data->saved_memories_file == INVALID_FILE) {
+        file_t f = dr_open_file(mem_fname.c_str(), DR_FILE_WRITE_OVERWRITE);
+        if (f == INVALID_FILE) {
+            dr_fprintf(STDERR, "Could not open file %s\n", mem_fname.c_str());
+            return;
+        }
+        data->saved_memories_file = f;
+    }
+
     std::string logfile = logdir + "instrace.log";
     data->log = dr_open_file(logfile.c_str(), DR_FILE_WRITE_OVERWRITE |
     // data->log = log_file_open(client_id, drcontext,
@@ -625,8 +648,8 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
     
     // dump state at entry point
     // DO NOT RETURN EARLY HERE. We still need to instrument every basic block
-    // if (!initial_state_recorded && pc == main_entry_pc) {
-    if (!initial_state_recorded && pc == (app_pc)0x4411a0) {
+    // if (!initial_state_recorded && pc == (app_pc)0x4411a0) {
+    if (!initial_state_recorded && pc == main_entry_pc) {
         initial_state_recorded = true;
 
         dr_insert_clean_call(drcontext, bb, instr, (void *)dump_mapped_memory, false,
@@ -671,6 +694,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
         || opc == OP_xrstor32
         // || opc == OP_pslld
         // || opc == OP_psllq
+        || opc == OP_ucomisd
         || opc == OP_vmovd
         || opc == OP_vpxor
         || opc == OP_vpbroadcastb
@@ -757,26 +781,16 @@ flush_saved_memories(per_thread_t *data)
     if (data->memory_buf_cnt == 0)
         return;
 
-    std::string fname = logdir + "saved_memories.bin";
-    if (data->saved_memories_file == INVALID_FILE) {
-        file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
-        if (f == INVALID_FILE) {
-            dr_fprintf(STDERR, "Could not open file %s\n", fname.c_str());
-            return;
-        }
-        data->saved_memories_file = f;
-    }
-
     for (saved_memory_t *saved_memory = data->memory_buf; saved_memory < data->memory_buf + data->memory_buf_cnt; ++saved_memory) {
         size_t buf_size = sizeof(*saved_memory);
         size_t num_written = dr_write_file(data->saved_memories_file, saved_memory, buf_size);
         if (num_written != buf_size) {
-            dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
+            dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", mem_fname.c_str(), num_written, buf_size);
         }
         buf_size = saved_memory->size;
         num_written = dr_write_file(data->saved_memories_file, saved_memory->data, buf_size);
         if (num_written != buf_size) {
-            dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
+            dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", mem_fname.c_str(), num_written, buf_size);
         }
         dr_global_free((void*)saved_memory->data, saved_memory->size);
     }
@@ -789,19 +803,10 @@ flush_saved_contexts(per_thread_t* data)
     if (data->context_buf_cnt == 0)
         return;
 
-    std::string fname = logdir + "saved_contexts.bin";
-    if (data->saved_contexts_file == INVALID_FILE) {
-        file_t f = dr_open_file(fname.c_str(), DR_FILE_WRITE_OVERWRITE);
-        if (f == INVALID_FILE) {
-            dr_fprintf(STDERR, "Could not open file %s\n", fname.c_str());
-            return;
-        }
-        data->saved_contexts_file = f;
-    }
     size_t buf_size = data->context_buf_cnt * sizeof(data->context_buf[0]);
     size_t num_written = dr_write_file(data->saved_contexts_file, data->context_buf, buf_size);
     if (num_written != buf_size) {
-        dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", fname.c_str(), num_written, buf_size);
+        dr_fprintf(STDERR, "Failed writing to file %s (%#zx/%#zx)\n", ctx_fname.c_str(), num_written, buf_size);
     }
     data->context_buf_cnt = 0;
 }
