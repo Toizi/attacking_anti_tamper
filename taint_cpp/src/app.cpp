@@ -93,7 +93,6 @@ int main(int argc, char **argv)
     size_t text_section_end = 0;
     if (!args.text_section_raw.empty()) {
         auto delim_pos = args.text_section_raw.find(',');
-        fmt::print(stderr, args.text_section_raw);
         text_section_start = stoull(args.text_section_raw.substr(0, delim_pos));
         auto size_str = args.text_section_raw.substr(delim_pos + 1);
         text_section_end = text_section_start + stoull(size_str);

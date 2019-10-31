@@ -3,6 +3,8 @@
 #include <fmt/format.h>
 #include <keystone/keystone.h>
 
+#include <signal.h>
+
 #include <unordered_map>
 #include <sstream>
 
@@ -45,29 +47,88 @@ void TaintAnalysis::set_debug(bool dbg)
 
 void TaintAnalysis::set_context(const saved_context_t *context, bool set_ip)
 {
-    if (set_ip)
+    api.setTaintRegister(api.registers.x86_rip, false);
+    if (set_ip) {
         api.setConcreteRegisterValue(api.registers.x86_rip, context->xip);
+    }
 
+    if (api.getConcreteRegisterValue(api.registers.x86_fs) != context->fs)
+        api.setTaintRegister(api.registers.x86_fs, false);
     api.setConcreteRegisterValue(api.registers.x86_fs, context->fs);
 
+    // if (api.getConcreteRegisterValue(api.registers.x86_eflags) != context->xflags)
+    // always clear taint of eflags since it probably happens too often that
+    // they didn't change but they were assigned to
+    fmt::print("clearing eflags taint\n");
+    api.setTaintRegister(api.registers.x86_eflags, false);
+    api.setTaintRegister(api.registers.x86_zf, false);
+    api.setTaintRegister(api.registers.x86_cf, false);
+    api.setConcreteRegisterValue(api.registers.x86_eflags, context->xflags);
+
     // set x86 regs
+    if (api.getConcreteRegisterValue(api.registers.x86_rdi) != context->xdi)
+        api.setTaintRegister(api.registers.x86_rdi, false);
     api.setConcreteRegisterValue(api.registers.x86_rdi, context->xdi);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_rsi) != context->xsi)
+        api.setTaintRegister(api.registers.x86_rsi, false);
     api.setConcreteRegisterValue(api.registers.x86_rsi, context->xsi);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_rbp) != context->xbp)
+        api.setTaintRegister(api.registers.x86_rbp, false);
     api.setConcreteRegisterValue(api.registers.x86_rbp, context->xbp);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_rsp) != context->xsp)
+        api.setTaintRegister(api.registers.x86_rsp, false);
     api.setConcreteRegisterValue(api.registers.x86_rsp, context->xsp);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_rbx) != context->xbx)
+        api.setTaintRegister(api.registers.x86_rbx, false);
     api.setConcreteRegisterValue(api.registers.x86_rbx, context->xbx);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_rdx) != context->xdx)
+        api.setTaintRegister(api.registers.x86_rdx, false);
     api.setConcreteRegisterValue(api.registers.x86_rdx, context->xdx);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_rcx) != context->xcx)
+        api.setTaintRegister(api.registers.x86_rcx, false);
     api.setConcreteRegisterValue(api.registers.x86_rcx, context->xcx);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_rax) != context->xax)
+        api.setTaintRegister(api.registers.x86_rax, false);
     api.setConcreteRegisterValue(api.registers.x86_rax, context->xax);
 
     // set amd64 regs
+    if (api.getConcreteRegisterValue(api.registers.x86_r8) != context->r8)
+        api.setTaintRegister(api.registers.x86_r8, false);
     api.setConcreteRegisterValue(api.registers.x86_r8, context->r8);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_r9) != context->r9)
+        api.setTaintRegister(api.registers.x86_r9, false);
     api.setConcreteRegisterValue(api.registers.x86_r9, context->r9);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_r10) != context->r10)
+        api.setTaintRegister(api.registers.x86_r10, false);
     api.setConcreteRegisterValue(api.registers.x86_r10, context->r10);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_r11) != context->r11)
+        api.setTaintRegister(api.registers.x86_r11, false);
     api.setConcreteRegisterValue(api.registers.x86_r11, context->r11);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_r12) != context->r12)
+        api.setTaintRegister(api.registers.x86_r12, false);
     api.setConcreteRegisterValue(api.registers.x86_r12, context->r12);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_r13) != context->r13)
+        api.setTaintRegister(api.registers.x86_r13, false);
     api.setConcreteRegisterValue(api.registers.x86_r13, context->r13);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_r14) != context->r14)
+        api.setTaintRegister(api.registers.x86_r14, false);
     api.setConcreteRegisterValue(api.registers.x86_r14, context->r14);
+
+    if (api.getConcreteRegisterValue(api.registers.x86_r15) != context->r15)
+        api.setTaintRegister(api.registers.x86_r15, false);
     api.setConcreteRegisterValue(api.registers.x86_r15, context->r15);
 }
 
@@ -167,6 +228,7 @@ bool TaintAnalysis::setup_context(std::vector<saved_module_t> &modules, size_t t
     return main_mem_tainted;
 }
 
+bool stop_requested = false;
 bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<saved_context_t *> &contexts, std::vector<saved_memory_t *> &memories)
 {
     size_t trace_pos = 0;
@@ -183,6 +245,15 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
     auto &tainted_instrs = *this->saved_instructions;
     // std::unordered_map<uint64_t, std::unique_ptr<triton::arch::Instruction>> cached_instructions;
     auto inst = triton::arch::Instruction();
+    struct sigaction sigIntHandler;
+    sigIntHandler.sa_handler = [](int sig) {
+        fmt::print("Caught signal {:d}\n", sig);
+        stop_requested = true;
+    };
+    sigemptyset(&sigIntHandler.sa_mask);
+    sigIntHandler.sa_flags = 0;
+    sigaction(SIGINT, &sigIntHandler, NULL);
+
     while (true)
     {
         // auto cached_inst = cached_instructions.find(pc);
@@ -212,11 +283,13 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
             // execute the instruction
             if (!api.processing(inst))
             {
-                // in case it is not a known instruction to skip, error out
-                if (std::find(skipped_instructions.begin(), skipped_instructions.end(), inst.getType()) == skipped_instructions.end())
-                {
-                    fmt::print("[-] unsupported instruction {}\n", inst.getDisassembly());
-                    return false;
+                if (false) {
+                    // in case it is not a known instruction to skip, error out
+                    if (std::find(skipped_instructions.begin(), skipped_instructions.end(), inst.getType()) == skipped_instructions.end())
+                    {
+                        fmt::print("[-] unsupported instruction {}\n", inst.getDisassembly());
+                        return false;
+                    }
                 }
 
                 skip_instruction = true;
@@ -236,10 +309,10 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
                 // sanity check
                 if (pc != ctx->xip)
                 {
-                    fmt::print(stderr, "[-] saved context wrong pc: {:#x} != {:#x}\n", pc, ctx->xip);
+                    fmt::print("[-] saved context wrong pc: {:#x} != {:#x}\n", pc, ctx->xip);
                     // auto rsp_mem = api.getConcreteMemoryAreaValue(
                     //     (uint64_t)api.getConcreteRegisterValue(api.registers.x86_rsp), 8, false);
-                    // fmt::print(stderr, "[D] rsp[0]: {:#x}\n", *(size_t*)rsp_mem.data());
+                    // fmt::print("[D] rsp[0]: {:#x}\n", *(size_t*)rsp_mem.data());
                     return false;
                 }
                 set_context(ctx);
@@ -285,19 +358,33 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
             return true;
         }
 
+        if (stop_requested)
+        {
+            fmt::print("[*] Stop requested. Stopping emulation\n");
+            return true;
+        }
+
         if (pc != trace[trace_pos])
         {
-            fmt::print(stderr, "[-] execution diverged at {:#x}, trace {:#x}\n",
-                       pc, trace[trace_pos]);
-            print_context();
-            fmt::print("[*] next trace instructions:\n");
-            for (int i = 0; i < 10; ++i)
-            {
-                if (trace.size() <= (trace_pos + i))
-                    break;
-                fmt::print("{:#018x}\n", trace[trace_pos + i]);
+            if (false) {
+                fmt::print("[-] execution diverged at {:#x}, trace {:#x}\n",
+                        pc, trace[trace_pos]);
+                print_context();
+                fmt::print("[*] next trace instructions:\n");
+                for (int i = 0; i < 10; ++i)
+                {
+                    if (trace.size() <= (trace_pos + i))
+                        break;
+                    fmt::print("{:#018x}\n", trace[trace_pos + i]);
+                }
+                return false;
             }
-            return false;
+            else {
+                fmt::print("[*] execution diverged at {:#x}, trace {:#x}\n",
+                        pc, trace[trace_pos]);
+                pc = trace[trace_pos];
+                api.setConcreteRegisterValue(api.registers.x86_rip, pc);
+            }
         }
     }
 

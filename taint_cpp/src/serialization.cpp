@@ -33,6 +33,8 @@ saved_memory_t *saved_memory_t::from_buf(char **buf)
 std::vector<saved_memory_t *>
 saved_memory_t::get_all(char *buf, size_t len)
 {
+    if (len == 0)
+        return {};
     char *cur = buf;
     char *end = buf + len;
     std::vector<saved_memory_t *> result;
