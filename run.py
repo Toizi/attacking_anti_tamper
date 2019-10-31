@@ -33,6 +33,15 @@ def parse_args(argv):
     parser.add_argument("--args",
         help="arguments that will be supplied to the program",
         required=False)
+    parser.add_argument("--success-exit-code",
+        help="the code the program exits with when it was successful",
+        default=0,
+        type=int,
+        required=False)
+    parser.add_argument("--use-input-working-dir",
+        help="execute the input_file with its directory as the working dir. " \
+            "Note: arguments are then relative to the input_file",
+        action='store_true')
     parser.add_argument("-b", "--build-dir", required=False,
         help="directory that will be used for intermediate results")
     parser.add_argument("-r", "--report-path", required=False,
@@ -61,8 +70,8 @@ def parse_args(argv):
 def setup_environment():
     global TRACER_PATH, TAINT_CPP_PATH
     mydir   = os.path.dirname(os.path.abspath(__file__))
-    TRACER_PATH = os.path.join(mydir, 'build_tracer_Release', 'linux', 'run_manual.sh')
-    TAINT_CPP_PATH = os.path.join(mydir, 'build_taint_cpp_Release', 'linux/src', 'taint_main')
+    TRACER_PATH = os.path.abspath(os.path.join(mydir, 'build_tracer_Release', 'linux', 'run_manual.sh'))
+    TAINT_CPP_PATH = os.path.abspath(os.path.join(mydir, 'build_taint_cpp_Release', 'linux/src', 'taint_main'))
     # analyze_path = os.path.join(mydir, 'taint', 'analyze.py')
     return True
 
@@ -79,13 +88,23 @@ def run_cmd(cmd, log_file=None):
         print("  command {}".format(cmd))
     return False
 
-def run_binary(input_file, input_msg):
-    cmd = '"{input}"'.format(input=os.path.abspath(input_file))
+def run_binary(input_file, input_msg, args, success_exit_code, use_input_working_dir):
+    cmd = [os.path.abspath(input_file)]
+    if args:
+        cmd.extend(shlex.split(args))
+    cwd = os.path.dirname(input_file) if use_input_working_dir else None 
     try:
-        proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
-        return proc.communicate(input=input_msg)
+            stderr=subprocess.PIPE,
+            cwd=cwd)
+        output = proc.communicate(input=input_msg)
+        if proc.returncode != success_exit_code:
+            print('[-] run_binary return code was {}, expected {}'.format(
+                proc.returncode, success_exit_code))
+            print('cmd: {}'.format(' '.join(cmd)))
+            return False
+        return output
     except subprocess.CalledProcessError:
         traceback.print_exc()
     except OSError:
@@ -93,7 +112,7 @@ def run_binary(input_file, input_msg):
         print("  binary: {}".format(cmd))
     return False
 
-def run_tracer(input_file, input_msg, log_dir, args):
+def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, use_input_working_dir):
     os.mkdir(log_dir)
     os.mkdir(os.path.join(log_dir, 'modules'))
     cmd = '"{tracer}" -logdir {logdir} -- "{binary}" {args}'.format(
@@ -101,13 +120,21 @@ def run_tracer(input_file, input_msg, log_dir, args):
         logdir=log_dir,
         binary=input_file,
         args=args)
-    
+    cwd = os.path.dirname(input_file) if use_input_working_dir else None 
     try:
         proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
+            stderr=subprocess.PIPE,
+            cwd=cwd)
 
         stdout_data, stderr_data = proc.communicate(input=input_msg)
+
+        if proc.returncode != success_exit_code:
+            print('[-] tracer return code was {}, expected {}'.format(
+                proc.returncode, success_exit_code))
+            print(stdout_data)
+            print(stderr_data)
+            return False
     except OSError:
         traceback.print_exc()
         print('error running command:\n"{}"'.format(cmd))
@@ -179,27 +206,37 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
     return True
 
 
-def check_patch_success(crack_only_path, patched_path, input_msg, report_dict):
+def check_patch_success(args, report_dict):
     # run binary that has been cracked but not patched to see if self-checking
     # triggers
-    os.chmod(crack_only_path, 0766)
-    ret = run_binary(crack_only_path, input_msg)
+    os.chmod(args.crack_only_output, 0766)
+    ret = run_binary(args.crack_only_output, args.input, args.args, args.success_exit_code, args.use_input_working_dir)
     if ret is False:
-        print('[-] error running crack_only_path')
+        print('[-] error running args.crack_only_output')
         return False
     # check that tampered message is in stdout
     report_dict['self_check_triggered'] = 'Tampered binary!' in ret[0]
 
+    # run the original version to get output that can be compared for correct program execution
+    os.chmod(args.output, 0766)
+    ret_org = run_binary(args.input_file, args.input, args.args, args.success_exit_code, args.use_input_working_dir)
+
     # run the patched and cracked version to make sure no self-checking triggers
-    os.chmod(patched_path, 0766)
-    ret = run_binary(patched_path, input_msg)
+    os.chmod(args.output, 0766)
+    ret = run_binary(args.output, args.input, args.args, args.success_exit_code, args.use_input_working_dir)
     if ret is False:
         print('[-] error running patched_path')
         return False
     if 'Tampered binary!' not in ret[0]:
-        if 'success' in ret[0]:
-            report_dict[RESULT_KEY] = 'sucess'
+        # if 'success' in ret[0]:
+        if ret_org[0] == ret[0]:
+            report_dict[RESULT_KEY] = 'success'
         else:
+            print('broken_program:')
+            print('org:')
+            print(ret_org[0])
+            print('patched:')
+            print(ret[0])
             report_dict[RESULT_KEY] = 'broken_program'
     else:
         report_dict[RESULT_KEY] = 'detected'
@@ -219,20 +256,21 @@ def get_text_section(binary_path):
 def run(args, build_dir, track_time, report_dict):
     log_dir = os.path.join(build_dir, 'instrace_logs')
 
-    # run the binary without tracer and record the time to be able to
-    # report the overhead of the obfuscation
-    if track_time:
-        print('[*] run_binary')
-        start_time = timer()
-        ret = run_binary(args.input_file, args.input)
-        if ret is False:
-            print('[-] run_binary')
-            return False
-        report_dict['execution'] = timer() - start_time
+    # obfuscation overhead is measured independently
+    # # run the binary without tracer and record the time to be able to
+    # # report the overhead of the obfuscation
+    # if track_time:
+    #     print('[*] run_binary')
+    #     start_time = timer()
+    #     ret = run_binary(args.input_file, args.input)
+    #     if ret is False:
+    #         print('[-] run_binary')
+    #         return False
+    #     report_dict['execution'] = timer() - start_time
 
     print('[*] run_tracer')
     start_time = timer()
-    ret = run_tracer(args.input_file, args.input, log_dir, args.args)
+    ret = run_tracer(args.input_file, args.input, log_dir, args.args, args.success_exit_code, args.use_input_working_dir)
     report_dict['tracer'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'tracer_failed'
@@ -273,7 +311,7 @@ def run(args, build_dir, track_time, report_dict):
                 return False
             
             print('[*] check_patch_success')
-            if not check_patch_success(args.crack_only_output, args.output, args.input, report_dict):
+            if not check_patch_success(args, report_dict):
                 report_dict[RESULT_KEY] = 'crack_check_failed'
                 print('[-] check_patch_success')
                 return False

@@ -16,16 +16,23 @@ class KeyboardInterruptError(Exception): pass
 
 class EvalSample:
 
-    def __init__(self, base_path, obfuscations, build_dir):
+    def __init__(self, base_path, obfuscations, build_dir, cmd_info):
         self.base_path = base_path
         self.original_path = '{}+none'.format(base_path)
         self.build_path = os.path.join(build_dir, os.path.basename(self.base_path))
         self.obfuscations = [ Obfuscation(obf, self.build_path, self.base_path) for obf in obfuscations ]
+        self.cmd_info = cmd_info
     
     def __str__(self):
-        s = """base_path: {}\noriginal_path: {}\nobfuscations: {}""".format(
-            self.base_path, self.original_path, self.obfuscations)
+        # s = """base_path: {}\noriginal_path: {}\nobfuscations: {}""".format(
+        #     self.base_path, self.original_path, self.obfuscations)
+        lines = ["EvalSample:"]
+        lines.extend(["  {}: {}".format(name, value) for name, value in vars(self).items()])
+        return '\n'.join(lines)
         return s
+    
+    def __repr__(self):
+        return self.__str__()
     
 
 class Obfuscation:
@@ -43,10 +50,14 @@ class Obfuscation:
     
     def __str__(self):
         # s = """{}""".format()
-        s = pformat(self)
-        return s
+        lines = ["\nObfuscation:"]
+        lines.extend(["  {}: {}".format(name, value) for name, value in vars(self).items()])
+        return '\n'.join(lines)
+    
+    def __repr__(self):
+        return self.__str__()
 
-analysis_values = ['execution', 'tracer', 'taint']
+analysis_values = ['tracer', 'taint']
 Analysis = namedtuple('Analysis', 'sample_path ' + ' '.join(analysis_values))
 
 def parse_args(argv):
@@ -62,8 +73,9 @@ def parse_args(argv):
     parser.add_argument("--build-dir",
         help="directory used to store temporary files (/tmp by default)",
         required=False)
-    parser.add_argument("--crack-function", type=str, required=True,
-        help="name of the function that will be cracked to check for successful patching")
+    parser.add_argument("--cmdline-input", type=str, required=False,
+        help="path to json file containing cmdline arguments/required files. " \
+             "The directory of the file is where the required files will be expected")
     parser.add_argument("-j", "--process-count", type=int)
     dbg_group = parser.add_mutually_exclusive_group()
     dbg_group.add_argument("--print-only", action="store_true",
@@ -71,6 +83,8 @@ def parse_args(argv):
     dbg_group.add_argument("--analyze-dir", type=str,
         help="if supplied, don't create directories or run any commands, " +\
             "only read reports from existing directory and create consolidated report")
+    parser.add_argument("--crack-function", type=str, required=True,
+        help="name of the function that will be cracked to check for successful patching")
     parser.add_argument("input_dir", type=str)
 
     args = parser.parse_args(argv)
@@ -82,6 +96,10 @@ def parse_args(argv):
     # parallel run by default
     if args.process_count is None:
         args.process_count = cpu_count()
+    
+    # set directory of cmdline as additional arg
+    if args.cmdline_input:
+        args.cmdline_dir = os.path.dirname(args.cmdline_input)
     
     return args
 
@@ -105,16 +123,20 @@ def setup_environment():
     RUN_PATH = os.path.join(mydir, 'run.py')
     return True
 
-def get_samples(input_dir, build_dir):
+def get_samples(input_dir, build_dir, cmdline_input_path):
     input_files = glob(input_dir + '*')
     # get the base path of the different binaries
     # the files have the form binary_name+obfuscation1-obfuscation2-...
     base_files = set((f.rpartition('+')[0] for f in input_files))
 
+    cmdline_input = {}
+    if cmdline_input_path:
+        with open(cmdline_input_path, 'r') as f:
+            cmdline_input = json.load(f)
     samples = []
     # sanity check that a non-obfuscated binary exists for all inputs
     for base_file in base_files:
-        none_path = '{}+none'.format(base_file)
+        none_path = '{}+none.0'.format(base_file)
         if not os.path.exists(none_path):
             print('[-] no non-obfuscated file found for base file\n  {}'.format(base_file))
             return False
@@ -122,10 +144,18 @@ def get_samples(input_dir, build_dir):
         obfuscations = [ f.rpartition('+')[2].split('-') for f in input_files
             # get files that have the common base
             if (base_file + '+') in f]
-        samples.append(EvalSample(base_file, obfuscations, build_dir))
+        if cmdline_input:
+            base_file_basename = os.path.basename(base_file)
+            if base_file_basename not in cmdline_input:
+                print('[-] file not present in cmdline input: {}'.format(base_file_basename))
+                return False
+            sample_cmd_info = cmdline_input[base_file_basename]
+        else:
+            sample_cmd_info = None
+        samples.append(EvalSample(base_file, obfuscations, build_dir, sample_cmd_info))
     return samples
 
-def run_obfuscation(obfuscation):
+def run_obfuscation(obfuscation, cmd_info):
     # args has been made global in pool
     try:
         # create build dir for obfuscation
@@ -143,10 +173,25 @@ def run_obfuscation(obfuscation):
             "--build-dir", obfuscation.build_path,
             "--taint-backend", "cpp",
             "--cleanup",
+            '--use-input-working-dir',
             obfuscation.original_path
         ]
         if input_arg:
             cmd.extend(input_arg)
+        
+        # put required files into working directory and append commands
+        # if --cmdline-input argument was supplied
+        if cmd_info:
+            # copy required files to tmp dir
+            for req_file in cmd_info['required_files']:
+                shutil.copy(os.path.join(args.cmdline_dir, req_file), obfuscation.build_path)
+            if cmd_info['args']:
+                cmd.append('--args')
+                cmd.append(' '.join(cmd_info['args']))
+            success_exit_code = cmd_info.get('success_exit_code', 0)
+            cmd.append('--success-exit-code')
+            cmd.append(str(success_exit_code))
+
 
         # store cmdline for easier debugging
         with open(obfuscation.cmdline_path, 'w') as f:
@@ -174,7 +219,7 @@ def run_sample(sample, pool):
     results = []
     # run each obfuscation in a process from the pool
     for obfuscation in sample.obfuscations:
-        results.append(pool.apply_async(run_obfuscation, (obfuscation,)))
+        results.append(pool.apply_async(run_obfuscation, (obfuscation, sample.cmd_info)))
     return results
 
     
@@ -226,7 +271,7 @@ def analyze_reports(args, reports):
 def run(args, build_dir):
 
     print('[*] get_samples')
-    samples = get_samples(args.input_dir, build_dir)
+    samples = get_samples(args.input_dir, build_dir, args.cmdline_input)
     if not samples:
         print('[-] get_samples')
         return False
@@ -234,7 +279,7 @@ def run(args, build_dir):
     if args.verbose:
         print('samples:')
         for sample in samples:
-            print('{}\n'.format(sample))
+            pprint(sample)
     
     print('[*] run_samples (process count = {})'.format(args.process_count))
     results = []
