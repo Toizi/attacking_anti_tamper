@@ -19,42 +19,17 @@ int main(int argc, char **argv)
     // reading saved contexts
     auto contexts_path = args.log_dir + "saved_contexts.bin";
     fmt::print(stdout, "[*] reading contexts\n");
-    std::vector<char> contexts_data;
-    if (!read_whole_file(contexts_path.c_str(), contexts_data))
-    {
-        fmt::print(stderr, "[-] failed reading contexts\n");
-        return 1;
-    }
-    std::vector<saved_context_t *> saved_contexts =
-        saved_context_t::get_all(contexts_data.data(), contexts_data.size());
-    if (args.verbose)
-        fmt::print("[D] number of contexts: {}\n", saved_contexts.size());
+    LazyContextLoader saved_contexts(contexts_path);
 
     // reading trace
     auto trace_path = args.log_dir + "instrace.log";
     fmt::print(stdout, "[*] reading trace\n");
-    std::vector<uint64_t> trace;
-    if (!read_trace_from_file(trace_path.c_str(), trace))
-    {
-        fmt::print(stderr, "[-] failed reading trace\n");
-        return 1;
-    }
-    if (args.verbose)
-        fmt::print("[D] trace length: {}\n", trace.size());
+    LazyTraceLoader trace(trace_path);
 
     // reading saved memories
     auto memories_path = args.log_dir + "saved_memories.bin";
     fmt::print(stdout, "[*] reading memories\n");
-    std::vector<char> memories_data;
-    if (!read_whole_file(memories_path.c_str(), memories_data))
-    {
-        fmt::print(stderr, "failed reading memories\n");
-        return 1;
-    }
-    std::vector<saved_memory_t *> saved_memories =
-        saved_memory_t::get_all(memories_data.data(), memories_data.size());
-    if (args.verbose)
-        fmt::print("[D] number of memories: {}\n", saved_memories.size());
+    LazyMemoryLoader saved_memories(memories_path);
 
     // reading modules
     fmt::print(stdout, "[*] reading modules\n");
@@ -100,6 +75,7 @@ int main(int argc, char **argv)
 
     TaintAnalysis analysis;
     analysis.set_debug(args.verbose);
+    analysis.set_print_all_instructions(args.print_all_instructions);
     // setup the memory/taint
     fmt::print("[*] setting up the context\n");
     if (!analysis.setup_context(modules, text_section_start, text_section_end)) // modules are now owned by analysis

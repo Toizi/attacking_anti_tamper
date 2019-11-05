@@ -3,6 +3,7 @@
 
 struct cmd_args {
     bool verbose = false;
+    bool print_all_instructions = false;
     bool fail_emulation_allowed = false;
     // std::string output_path;
     // std::string input_binary;

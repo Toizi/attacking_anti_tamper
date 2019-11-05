@@ -8,7 +8,7 @@ add_library(utils utils.cpp)
 
 add_library(analysis analysis.cpp)
 include(CMakePrintHelpers)
-target_link_libraries(analysis PUBLIC Triton::triton PRIVATE keystone)
+target_link_libraries(analysis PUBLIC Triton::triton PRIVATE keystone utils)
 
 add_executable(taint_main app.cpp)
 target_link_libraries(taint_main PRIVATE serialization cmdline utils analysis)

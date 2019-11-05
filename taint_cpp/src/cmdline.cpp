@@ -8,6 +8,8 @@ bool parse_args(int argc, char **argv, cmd_args &args) {
     auto cli = (
         clipp::option("-v", "--verbose").set(args.verbose)
             .doc("print debugging output"),
+        clipp::option("-vv", "--print-all-instructions").set(args.print_all_instructions)
+            .doc("print all instructions during emulation"),
         clipp::option("--fail-emulation-allowed").set(args.fail_emulation_allowed)
             .doc("continue with generating patch with the instructions that were found even if the emulation failed"),
         (clipp::required("--json-output") & clipp::value("json_output", args.json_output_path))

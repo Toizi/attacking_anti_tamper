@@ -25,6 +25,7 @@ class TaintAnalysis
 {
 private:
     bool debug = false;
+    bool print_all_instructions = false;
     triton::API api;
     std::vector<saved_module_t> modules;
     std::vector<saved_module_t> main_modules;
@@ -38,9 +39,10 @@ private:
 
 public:
     void set_debug(bool dbg);
+    void set_print_all_instructions(bool dbg);
     // saved_instructions_t &get_tainted_instructions() { return *saved_instructions; }
     bool setup_context(std::vector<saved_module_t> &modules, size_t txt_start, size_t txt_end);
-    bool emulate(const std::vector<uint64_t> &trace, std::vector<saved_context_t *> &contexts,
-                                  std::vector<saved_memory_t *> &memories);
+    bool emulate(LazyTraceLoader &trace, LazyContextLoader &contexts,
+                                  LazyMemoryLoader &memories);
     std::vector<std::unique_ptr<Patch>> create_patch();
 };

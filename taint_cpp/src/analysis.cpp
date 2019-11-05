@@ -45,6 +45,11 @@ void TaintAnalysis::set_debug(bool dbg)
     this->debug = dbg;
 }
 
+void TaintAnalysis::set_print_all_instructions(bool print_all)
+{
+    this->print_all_instructions = print_all;
+}
+
 void TaintAnalysis::set_context(const saved_context_t *context, bool set_ip)
 {
     api.setTaintRegister(api.registers.x86_rip, false);
@@ -229,14 +234,16 @@ bool TaintAnalysis::setup_context(std::vector<saved_module_t> &modules, size_t t
 }
 
 bool stop_requested = false;
-bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<saved_context_t *> &contexts, std::vector<saved_memory_t *> &memories)
+bool TaintAnalysis::emulate(LazyTraceLoader &trace,
+    LazyContextLoader &contexts,
+    LazyMemoryLoader &memories)
 {
     size_t trace_pos = 0;
-    auto pc = trace[0];
+    auto pc = *trace.current;
     auto last_pc = pc;
 
-    contexts[0]->xip = pc;
-    set_context(contexts[0], true);
+    contexts.current->xip = pc;
+    set_context(contexts.current, true);
     size_t context_pos = 1;
     size_t memory_pos = 0;
 
@@ -295,15 +302,16 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
                 skip_instruction = true;
             }
 
-            if (this->debug)
+            if (this->print_all_instructions)
             {
                 fmt::print("[D] {0:07} {3:#x} {1} {2}\n", trace_pos, inst.getDisassembly(), inst.isTainted() ? "tainted" : "", inst.getAddress());
             }
 
             // check if we need to restore the register context
-            if (context_pos < contexts.size() && trace_pos == contexts[context_pos]->instr_num)
+            // if (context_pos < contexts.size() && trace_pos == contexts[context_pos]->instr_num)
+            if (contexts.current && trace_pos == contexts.current->instr_num)
             {
-                auto ctx = contexts[context_pos];
+                auto ctx = contexts.current;
                 if (this->debug)
                     fmt::print("[D] saved context {}\n", context_pos);
                 // sanity check
@@ -316,17 +324,19 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
                     return false;
                 }
                 set_context(ctx);
+                contexts.next();
                 ++context_pos;
             }
 
             // check if we need to restore memory
-            while (memory_pos < memories.size() && trace_pos == memories[memory_pos]->instr_num)
+            while (memories.current && trace_pos == memories.current->instr_num)
             {
-                saved_memory_t &mem = *memories[memory_pos];
+                saved_memory_t &mem = *memories.current;
                 if (this->debug)
                     fmt::print("[D] saved memory {}: {:#x} - {:#x}\n",
                                memory_pos, mem.start_addr, mem.start_addr + mem.size);
                 api.setConcreteMemoryAreaValue(mem.start_addr, (uint8_t *)mem.data, mem.size);
+                memories.next();
                 ++memory_pos;
             }
 
@@ -351,7 +361,8 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
 
         // check if we are done
         ++trace_pos;
-        if (trace.size() <= trace_pos)
+        trace.next();
+        if (!trace.current)
         {
             fmt::print("[+] reached end of trace. emulation done\n");
             // this->saved_instructions = std::move(tainted_instrs_p);
@@ -364,25 +375,25 @@ bool TaintAnalysis::emulate(const std::vector<uint64_t> &trace, std::vector<save
             return true;
         }
 
-        if (pc != trace[trace_pos])
+        if (pc != *trace.current)
         {
             if (false) {
                 fmt::print("[-] execution diverged at {:#x}, trace {:#x}\n",
-                        pc, trace[trace_pos]);
+                        pc, *trace.current);
                 print_context();
                 fmt::print("[*] next trace instructions:\n");
                 for (int i = 0; i < 10; ++i)
                 {
-                    if (trace.size() <= (trace_pos + i))
+                    if (!trace.next())
                         break;
-                    fmt::print("{:#018x}\n", trace[trace_pos + i]);
+                    fmt::print("{:#018x}\n", *trace.current);
                 }
                 return false;
             }
             else {
                 fmt::print("[*] execution diverged at {:#x}, trace {:#x}\n",
-                        pc, trace[trace_pos]);
-                pc = trace[trace_pos];
+                        pc, *trace.current);
+                pc = *trace.current;
                 api.setConcreteRegisterValue(api.registers.x86_rip, pc);
             }
         }
