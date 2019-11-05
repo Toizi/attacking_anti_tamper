@@ -38,9 +38,9 @@ def parse_args(argv):
         default=0,
         type=int,
         required=False)
-    parser.add_argument("--use-input-working-dir",
-        help="execute the input_file with its directory as the working dir. " \
-            "Note: arguments are then relative to the input_file",
+    parser.add_argument("--use-build-working-dir",
+        help="execute the input_file with the build directory as the working dir. " \
+            "Note: arguments are then relative to the build dir",
         action='store_true')
     parser.add_argument("-b", "--build-dir", required=False,
         help="directory that will be used for intermediate results")
@@ -60,6 +60,7 @@ def parse_args(argv):
     
     args = parser.parse_args(argv)
 
+    args.input_file = os.path.abspath(args.input_file)
     if not args.output:
         fname, ext = os.path.splitext(args.input_file)
         cracked_suffix = '' if not args.crack_function else '_cracked'
@@ -88,11 +89,10 @@ def run_cmd(cmd, log_file=None):
         print("  command {}".format(cmd))
     return False
 
-def run_binary(input_file, input_msg, args, success_exit_code, use_input_working_dir):
+def run_binary(input_file, input_msg, args, success_exit_code, cwd=None):
     cmd = [os.path.abspath(input_file)]
     if args:
         cmd.extend(shlex.split(args))
-    cwd = os.path.dirname(input_file) if use_input_working_dir else None 
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -112,7 +112,7 @@ def run_binary(input_file, input_msg, args, success_exit_code, use_input_working
         print("  binary: {}".format(cmd))
     return False
 
-def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, use_input_working_dir):
+def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, cwd):
     os.mkdir(log_dir)
     os.mkdir(os.path.join(log_dir, 'modules'))
     cmd = '"{tracer}" -logdir {logdir} -- "{binary}" {args}'.format(
@@ -120,7 +120,6 @@ def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, use_inpu
         logdir=log_dir,
         binary=input_file,
         args=args)
-    cwd = os.path.dirname(input_file) if use_input_working_dir else None 
     try:
         proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -177,7 +176,7 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
         log_dir,
         "--fail-emulation-allowed",
         "--json-output", patches_path,
-        "-v"
+        "-v",
     ]
     if text_section_arg:
         cmd.append(text_section_arg)
@@ -206,11 +205,11 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
     return True
 
 
-def check_patch_success(args, report_dict):
+def check_patch_success(args, report_dict, cwd):
     # run binary that has been cracked but not patched to see if self-checking
     # triggers
     os.chmod(args.crack_only_output, 0766)
-    ret = run_binary(args.crack_only_output, args.input, args.args, args.success_exit_code, args.use_input_working_dir)
+    ret = run_binary(args.crack_only_output, args.input, args.args, args.success_exit_code, cwd)
     if ret is False:
         print('[-] error running args.crack_only_output')
         return False
@@ -219,11 +218,11 @@ def check_patch_success(args, report_dict):
 
     # run the original version to get output that can be compared for correct program execution
     os.chmod(args.output, 0766)
-    ret_org = run_binary(args.input_file, args.input, args.args, args.success_exit_code, args.use_input_working_dir)
+    ret_org = run_binary(args.input_file, args.input, args.args, args.success_exit_code, cwd)
 
     # run the patched and cracked version to make sure no self-checking triggers
     os.chmod(args.output, 0766)
-    ret = run_binary(args.output, args.input, args.args, args.success_exit_code, args.use_input_working_dir)
+    ret = run_binary(args.output, args.input, args.args, args.success_exit_code, cwd)
     if ret is False:
         print('[-] error running patched_path')
         return False
@@ -270,7 +269,7 @@ def run(args, build_dir, track_time, report_dict):
 
     print('[*] run_tracer')
     start_time = timer()
-    ret = run_tracer(args.input_file, args.input, log_dir, args.args, args.success_exit_code, args.use_input_working_dir)
+    ret = run_tracer(args.input_file, args.input, log_dir, args.args, args.success_exit_code, args.use_build_working_dir and build_dir or None)
     report_dict['tracer'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'tracer_failed'
@@ -311,7 +310,7 @@ def run(args, build_dir, track_time, report_dict):
                 return False
             
             print('[*] check_patch_success')
-            if not check_patch_success(args, report_dict):
+            if not check_patch_success(args, report_dict, args.use_build_working_dir and build_dir or None):
                 report_dict[RESULT_KEY] = 'crack_check_failed'
                 print('[-] check_patch_success')
                 return False

@@ -41,7 +41,7 @@ class Obfuscation:
         self.options = options
         self.options_str = '-'.join(self.options)
         self.build_path = os.path.join(base_build_path, self.options_str)
-        self.original_path = '{}+{}'.format(base_path, self.options_str)
+        self.original_path = os.path.abspath('{}+{}'.format(base_path, self.options_str))
         self.report_path = os.path.join(self.build_path, 'report.json')
         self.cracked_path = os.path.join(self.build_path, 'bin_cracked')
         self.patched_path = os.path.join(self.build_path, 'bin_patched_cracked')
@@ -120,7 +120,7 @@ def run_cmd(cmd, log_file=None):
 def setup_environment():
     global RUN_PATH
     mydir = os.path.dirname(os.path.abspath(__file__))
-    RUN_PATH = os.path.join(mydir, 'run.py')
+    RUN_PATH = os.path.abspath(os.path.join(mydir, 'run.py'))
     return True
 
 def get_samples(input_dir, build_dir, cmdline_input_path):
@@ -173,7 +173,7 @@ def run_obfuscation(obfuscation, cmd_info):
             "--build-dir", obfuscation.build_path,
             "--taint-backend", "cpp",
             "--cleanup",
-            '--use-input-working-dir',
+            '--use-build-working-dir',
             obfuscation.original_path
         ]
         if input_arg:
@@ -245,11 +245,11 @@ def analyze_reports(args, reports):
     result = dict()
     for sample, sample_report in reports:
         # sample_report: dict{ obf_str => dict(times) }
-        ref_report = sample_report['none']
+        ref_report = sample_report['none.0']
         for obf_str, report in sample_report.items():
             # report: dict{ exec_id => exec_time }
-            if obf_str == 'none':
-                continue
+            # if obf_str == 'none.0':
+            #     continue
 
             analysis = {
                 'sample_base'          : sample.base_path,
