@@ -242,6 +242,12 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         dr_fprintf(STDERR, "fatal error: missing argument -logdir {path}\n");
         dr_abort();
     }
+
+    // checks if the logfile exists already which serves as check whether this
+    // process has been forked (we don't want to trace forks)
+    if (dr_file_exists((logdir + "instrace.log").c_str()))
+        return;
+
     // if (!op_logdir.get_value().empty()) {
     //     dr_printf("logdir: %s\n", op_logdir.get_value().c_str());
     // }
