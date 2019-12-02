@@ -15,6 +15,7 @@ import json
 import shutil
 import stat
 import binascii
+import filecmp
 from pprint import pprint
 
 from taint.r2_apply_patches import crack_function, patch_program
@@ -33,11 +34,17 @@ def parse_args(argv):
     parser.add_argument("--args",
         help="arguments that will be supplied to the program",
         required=False)
+    parser.add_argument("--env",
+        help="additional environment variables that will be set",
+        required=False)
     parser.add_argument("--success-exit-code",
         help="the code the program exits with when it was successful",
         default=0,
         type=int,
         required=False)
+    parser.add_argument("--app-result-output",
+        help="the file produced by the application that can be used to check for correctness",
+        default="stdout")
     parser.add_argument("--use-build-working-dir",
         help="execute the input_file with the build directory as the working dir. " \
             "Note: arguments are then relative to the build dir",
@@ -66,13 +73,15 @@ def parse_args(argv):
         cracked_suffix = '' if not args.crack_function else '_cracked'
         args.output = '{}_patched{}{}'.format(fname, cracked_suffix, ext)
     
+    
     return args
 
 def setup_environment():
-    global TRACER_PATH, TAINT_CPP_PATH
+    global TRACER_PATH, TAINT_CPP_PATH, LIBMINM_PATH
     mydir   = os.path.dirname(os.path.abspath(__file__))
     TRACER_PATH = os.path.abspath(os.path.join(mydir, 'build_tracer_Release', 'linux', 'run_manual.sh'))
     TAINT_CPP_PATH = os.path.abspath(os.path.join(mydir, 'build_taint_cpp_Release', 'linux/src', 'taint_main'))
+    LIBMINM_PATH = os.path.abspath(os.path.join(mydir, 'self-checksumming', 'hook/build', 'libminm_env.so'))
     # analyze_path = os.path.join(mydir, 'taint', 'analyze.py')
     return True
 
@@ -89,7 +98,7 @@ def run_cmd(cmd, log_file=None):
         print("  command {}".format(cmd))
     return False
 
-def run_binary(input_file, input_msg, args, success_exit_code, cwd=None):
+def run_binary(input_file, input_msg, args, success_exit_code, cwd, env):
     cmd = [os.path.abspath(input_file)]
     if args:
         cmd.extend(shlex.split(args))
@@ -97,7 +106,8 @@ def run_binary(input_file, input_msg, args, success_exit_code, cwd=None):
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=cwd)
+            cwd=cwd,
+            env=env)
         output = proc.communicate(input=input_msg)
         if proc.returncode != success_exit_code:
             print('[-] run_binary return code was {}, expected {}'.format(
@@ -112,7 +122,7 @@ def run_binary(input_file, input_msg, args, success_exit_code, cwd=None):
         print("  binary: {}".format(cmd))
     return False
 
-def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, cwd):
+def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, cwd, env):
     os.mkdir(log_dir)
     os.mkdir(os.path.join(log_dir, 'modules'))
     cmd = '"{tracer}" -logdir {logdir} -- "{binary}" {args}'.format(
@@ -124,16 +134,21 @@ def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, cwd):
         proc = subprocess.Popen(shlex.split(cmd), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=cwd)
+            cwd=cwd,
+            env=env)
 
         stdout_data, stderr_data = proc.communicate(input=input_msg)
 
         if proc.returncode != success_exit_code:
-            print('[-] tracer return code was {}, expected {}'.format(
-                proc.returncode, success_exit_code))
-            print(stdout_data)
-            print(stderr_data)
-            return False
+            # special case since blowfish crashes dynamorio on exit
+            if 'bf.x' in input_file and 'Segmentation fault' in stderr_data:
+                pass
+            else:
+                print('[-] tracer return code was {}, expected {}'.format(
+                    proc.returncode, success_exit_code))
+                print(stdout_data)
+                print(stderr_data)
+                return False
     except OSError:
         traceback.print_exc()
         print('error running command:\n"{}"'.format(cmd))
@@ -165,7 +180,7 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
             log_dir,
             "--binary", input_file,
             "--output", output_file,
-            "-v"
+            "-v",
         ]
         from taint.run import main as taint_main
         return taint_main(cmd)
@@ -177,6 +192,7 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
         "--fail-emulation-allowed",
         "--json-output", patches_path,
         "-v",
+        # "-vv"
     ]
     if text_section_arg:
         cmd.append(text_section_arg)
@@ -205,38 +221,66 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
     return True
 
 
-def check_patch_success(args, report_dict, cwd):
+def check_patch_success(args, report_dict, cwd, build_dir):
     # run binary that has been cracked but not patched to see if self-checking
     # triggers
     os.chmod(args.crack_only_output, 0766)
-    ret = run_binary(args.crack_only_output, args.input, args.args, args.success_exit_code, cwd)
+    ret = run_binary(args.crack_only_output, args.input, args.args, args.success_exit_code, cwd, args.env)
     if ret is False:
         print('[-] error running args.crack_only_output')
         return False
     # check that tampered message is in stdout
     report_dict['self_check_triggered'] = 'Tampered binary!' in ret[0]
 
+    # get path of file created by the application
+    if args.app_result_output != 'stdout':
+        result_output_path = os.path.join(cwd or os.getcwd(), args.app_result_output)
+    else:
+        result_output_path = None
+
     # run the original version to get output that can be compared for correct program execution
     os.chmod(args.output, 0766)
-    ret_org = run_binary(args.input_file, args.input, args.args, args.success_exit_code, cwd)
+    ret_org = run_binary(args.input_file, args.input, args.args, args.success_exit_code, cwd, args.env)
+    if ret_org is False:
+        print('[-] error running original binary')
+        return False
+
+    # move file to compare it later
+    if result_output_path:
+        shutil.move(result_output_path, result_output_path + "_org")
 
     # run the patched and cracked version to make sure no self-checking triggers
     os.chmod(args.output, 0766)
-    ret = run_binary(args.output, args.input, args.args, args.success_exit_code, cwd)
+    ret = run_binary(args.output, args.input, args.args, args.success_exit_code, cwd, args.env)
     if ret is False:
         print('[-] error running patched_path')
         return False
+    
     if 'Tampered binary!' not in ret[0]:
         # if 'success' in ret[0]:
-        if ret_org[0] == ret[0]:
-            report_dict[RESULT_KEY] = 'success'
+
+        # if an output file exists, check those for equality
+        if result_output_path:
+            # check if files differ
+            if not filecmp.cmp(result_output_path + "_org", result_output_path, shallow=False):
+                report_dict[RESULT_KEY] = 'broken_program'
+            else:
+                # files do not differ
+                report_dict[RESULT_KEY] = 'success'
+
+        # TODO: add option to eval on stdout to prepare for comparison
+        # otherwise use the stdout
         else:
-            print('broken_program:')
-            print('org:')
-            print(ret_org[0])
-            print('patched:')
-            print(ret[0])
-            report_dict[RESULT_KEY] = 'broken_program'
+            stdout_org = ret_org[0].strip()
+            stdout_cracked = ret[0].strip()
+            if stdout_org == stdout_cracked:
+                report_dict[RESULT_KEY] = 'success'
+            else:
+                with open(os.path.join(build_dir, 'expected_stdout'), 'w') as f:
+                    f.write(stdout_org)
+                with open(os.path.join(build_dir, 'cracked_stdout'), 'w') as f:
+                    f.write(stdout_cracked)
+                report_dict[RESULT_KEY] = 'broken_program'
     else:
         report_dict[RESULT_KEY] = 'detected'
 
@@ -269,7 +313,7 @@ def run(args, build_dir, track_time, report_dict):
 
     print('[*] run_tracer')
     start_time = timer()
-    ret = run_tracer(args.input_file, args.input, log_dir, args.args, args.success_exit_code, args.use_build_working_dir and build_dir or None)
+    ret = run_tracer(args.input_file, args.input, log_dir, args.args, args.success_exit_code, args.use_build_working_dir and build_dir or None, args.env)
     report_dict['tracer'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'tracer_failed'
@@ -310,7 +354,7 @@ def run(args, build_dir, track_time, report_dict):
                 return False
             
             print('[*] check_patch_success')
-            if not check_patch_success(args, report_dict, args.use_build_working_dir and build_dir or None):
+            if not check_patch_success(args, report_dict, args.use_build_working_dir and build_dir or None, build_dir):
                 report_dict[RESULT_KEY] = 'crack_check_failed'
                 print('[-] check_patch_success')
                 return False
@@ -326,6 +370,18 @@ def main(argv):
     args = parse_args(argv)
     if not setup_environment():
         return False
+    
+    # setup environment, i.e. LD_PRELOAD hook for input interception + name of intercept file
+    if args.env:
+        environ = os.environ
+        environ['LD_PRELOAD'] = '{} {}'.format(
+            environ.get('LD_PRELOAD', ''),
+            LIBMINM_PATH).strip()
+        for key, val in [s.split('=') for s in args.env.split(' ')]:
+            environ[key] = val
+        args.env = environ
+    else:
+        args.env = os.environ
     
     # create build dir as tmp dir if none was specified
     if not args.build_dir:

@@ -185,9 +185,23 @@ def run_obfuscation(obfuscation, cmd_info):
             # copy required files to tmp dir
             for req_file in cmd_info['required_files']:
                 shutil.copy(os.path.join(args.cmdline_dir, req_file), obfuscation.build_path)
+            # pass args to program
             if cmd_info['args']:
                 cmd.append('--args')
                 cmd.append(' '.join(cmd_info['args']))
+
+            # pass additional environment vars if required
+            if 'env' in cmd_info:
+                cmd.append('--env')
+                env = []
+                for key, val in cmd_info['env'].items():
+                    env.append('{}={}'.format(key, val))
+                cmd.append(' '.join(env))
+            
+            # pass the output file to check for correctness
+            cmd.append('--app-result-output')
+            cmd.append(cmd_info.get("output_file", "stdout"))
+
             success_exit_code = cmd_info.get('success_exit_code', 0)
             cmd.append('--success-exit-code')
             cmd.append(str(success_exit_code))
