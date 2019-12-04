@@ -98,8 +98,8 @@ int main(int argc, char **argv)
 
     // get patch instructions from analysis
     fmt::print("[*] creating patch\n");
-    std::vector<std::unique_ptr<Patch>> patches = analysis.create_patch();
-    if (patches.empty()) {
+    std::vector<std::unique_ptr<Patch>> patches;
+    if (!analysis.create_patch(&patches)) {
         fmt::print(stderr, "create patch failed\n");
         return 1;
     }

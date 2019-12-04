@@ -402,16 +402,15 @@ bool TaintAnalysis::emulate(LazyTraceLoader &trace,
     return false;
 }
 
-std::vector<std::unique_ptr<Patch>>
-TaintAnalysis::create_patch()
+bool
+TaintAnalysis::create_patch(std::vector<std::unique_ptr<Patch>> *patches)
 {
-    std::vector<std::unique_ptr<Patch>> patches;
     ks_engine *ks;
     auto err = ks_open(KS_ARCH_X86, KS_MODE_64, &ks);
     if (err != KS_ERR_OK)
     {
         fmt::print(stderr, "ks_open failed\n");
-        return {};
+        return false;
     }
     for (std::pair<const uint64_t, SavedInstruction> &saved_inst : *saved_instructions)
     {
@@ -470,7 +469,7 @@ TaintAnalysis::create_patch()
                     patch->data.push_back('\x90');
                 }
             }
-            patches.push_back(std::move(patch));
+            patches->push_back(std::move(patch));
         }
         // cmov
         else {
@@ -510,7 +509,7 @@ TaintAnalysis::create_patch()
                         patch->data.push_back('\x90');
                     }
                 }
-                patches.push_back(std::move(patch));
+                patches->push_back(std::move(patch));
             }
         }
 
@@ -519,5 +518,5 @@ TaintAnalysis::create_patch()
     }
 cleanup:
     ks_close(ks);
-    return patches;
+    return true;
 }

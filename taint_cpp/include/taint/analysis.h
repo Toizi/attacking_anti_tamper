@@ -44,5 +44,5 @@ public:
     bool setup_context(std::vector<saved_module_t> &modules, size_t txt_start, size_t txt_end);
     bool emulate(LazyTraceLoader &trace, LazyContextLoader &contexts,
                                   LazyMemoryLoader &memories);
-    std::vector<std::unique_ptr<Patch>> create_patch();
+    bool create_patch(std::vector<std::unique_ptr<Patch>> *patches);
 };
