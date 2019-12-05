@@ -198,6 +198,10 @@ def run_obfuscation(obfuscation, cmd_info):
                     env.append('{}={}'.format(key, val))
                 cmd.append(' '.join(env))
             
+            if 'eval_prepare_stdout' in cmd_info:
+                cmd.append("--eval-stdout")
+                cmd.append(cmd_info['eval_prepare_stdout'])
+            
             # pass the output file to check for correctness
             cmd.append('--app-result-output')
             cmd.append(cmd_info.get("output_file", "stdout"))

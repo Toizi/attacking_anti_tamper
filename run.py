@@ -16,6 +16,7 @@ import shutil
 import stat
 import binascii
 import filecmp
+import re
 from pprint import pprint
 
 from taint.r2_apply_patches import crack_function, patch_program
@@ -41,6 +42,10 @@ def parse_args(argv):
         help="the code the program exits with when it was successful",
         default=0,
         type=int,
+        required=False)
+    parser.add_argument("--eval-stdout",
+        help="python code that will be called on the output of the binary to make the comparison of several executions deterministic (should transform variable 's')",
+        type=str,
         required=False)
     parser.add_argument("--app-result-output",
         help="the file produced by the application that can be used to check for correctness",
@@ -221,7 +226,7 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
     return True
 
 
-def check_patch_success(args, report_dict, cwd, build_dir):
+def check_patch_success(args, report_dict, cwd, build_dir, stdout_eval_str):
     # run binary that has been cracked but not patched to see if self-checking
     # triggers
     os.chmod(args.crack_only_output, 0766)
@@ -229,8 +234,11 @@ def check_patch_success(args, report_dict, cwd, build_dir):
     if ret is False:
         print('[-] error running args.crack_only_output')
         return False
-    # check that tampered message is in stdout
-    report_dict['self_check_triggered'] = 'Tampered binary!' in ret[0]
+    # check how many unique checkers triggered a response
+    tamper_response_ids = set()
+    for match in re.finditer(r'Tampered binary \(id = (\d+)\)', ret[0]):
+        tamper_response_ids.add(match.group(1))
+    report_dict['self_check_triggered'] = len(tamper_response_ids)
 
     # get path of file created by the application
     if args.app_result_output != 'stdout':
@@ -268,18 +276,23 @@ def check_patch_success(args, report_dict, cwd, build_dir):
                 # files do not differ
                 report_dict[RESULT_KEY] = 'success'
 
-        # TODO: add option to eval on stdout to prepare for comparison
-        # otherwise use the stdout
         else:
             stdout_org = ret_org[0].strip()
             stdout_cracked = ret[0].strip()
+            if stdout_eval_str:
+                print('using eval on stdout: {}'.format(stdout_eval_str))
+                stdout_org = eval(stdout_eval_str, {}, {'s': stdout_org})
+                stdout_cracked = eval(stdout_eval_str, {}, {'s': stdout_cracked})
+
+            # debugging
+            with open(os.path.join(build_dir, 'expected_stdout'), 'w') as f:
+                f.write(stdout_org)
+            with open(os.path.join(build_dir, 'cracked_stdout'), 'w') as f:
+                f.write(stdout_cracked)
+
             if stdout_org == stdout_cracked:
                 report_dict[RESULT_KEY] = 'success'
             else:
-                with open(os.path.join(build_dir, 'expected_stdout'), 'w') as f:
-                    f.write(stdout_org)
-                with open(os.path.join(build_dir, 'cracked_stdout'), 'w') as f:
-                    f.write(stdout_cracked)
                 report_dict[RESULT_KEY] = 'broken_program'
     else:
         report_dict[RESULT_KEY] = 'detected'
@@ -354,7 +367,7 @@ def run(args, build_dir, track_time, report_dict):
                 return False
             
             print('[*] check_patch_success')
-            if not check_patch_success(args, report_dict, args.use_build_working_dir and build_dir or None, build_dir):
+            if not check_patch_success(args, report_dict, args.use_build_working_dir and build_dir or None, build_dir, args.eval_stdout):
                 report_dict[RESULT_KEY] = 'crack_check_failed'
                 print('[-] check_patch_success')
                 return False
