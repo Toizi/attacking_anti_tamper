@@ -17,6 +17,7 @@ import stat
 import binascii
 import filecmp
 import re
+import threading
 from pprint import pprint
 
 from taint.r2_apply_patches import crack_function, patch_program
@@ -107,25 +108,36 @@ def run_binary(input_file, input_msg, args, success_exit_code, cwd, env):
     cmd = [os.path.abspath(input_file)]
     if args:
         cmd.extend(shlex.split(args))
+
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
             env=env)
-        output = proc.communicate(input=input_msg)
-        if proc.returncode != success_exit_code:
-            print('[-] run_binary return code was {}, expected {}'.format(
-                proc.returncode, success_exit_code))
-            print('cmd: {}'.format(' '.join(cmd)))
-            return False
-        return output
-    except subprocess.CalledProcessError:
-        traceback.print_exc()
     except OSError:
         traceback.print_exc()
         print("  binary: {}".format(cmd))
-    return False
+        return False
+    
+    ret = False
+    # set half an hour timeout which should be more than enough for simple binaries to finish
+    timer = threading.Timer(1800, proc.kill)
+    try:
+        timer.start()
+        output = proc.communicate(input=input_msg)
+        if not timer.isAlive():
+            print('run_binary timed out')
+            print('cmd: {}'.format(' '.join(cmd)))
+        elif proc.returncode != success_exit_code:
+            print('[-] run_binary return code was {}, expected {}'.format(
+                proc.returncode, success_exit_code))
+            print('cmd: {}'.format(' '.join(cmd)))
+        else:
+            ret = output
+    finally:
+        timer.cancel()
+    return ret
 
 def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, cwd, env):
     os.mkdir(log_dir)
@@ -260,13 +272,13 @@ def check_patch_success(args, report_dict, cwd, build_dir, stdout_eval_str):
     # run the patched and cracked version to make sure no self-checking triggers
     os.chmod(args.output, 0766)
     ret = run_binary(args.output, args.input, args.args, args.success_exit_code, cwd, args.env)
-    if ret is False:
-        print('[-] error running patched_path')
-        return False
     
-    if 'Tampered binary!' not in ret[0]:
-        # if 'success' in ret[0]:
+    # if it returned false we either got a timeout or a wrong exit code
+    # either way we can file it under broken program
+    if ret is False:
+        report_dict[RESULT_KEY] = 'broken_program'
 
+    elif 'Tampered binary!' not in ret[0]:
         # if an output file exists, check those for equality
         if result_output_path:
             # check if files differ
@@ -297,6 +309,11 @@ def check_patch_success(args, report_dict, cwd, build_dir, stdout_eval_str):
     else:
         report_dict[RESULT_KEY] = 'detected'
 
+        tamper_response_ids = set()
+        for match in re.finditer(r'Tampered binary \(id = (\d+)\)', ret[0]):
+            tamper_response_ids.add(match.group(1))
+        report_dict['detected_count'] = len(tamper_response_ids)
+
     return True
 
 from elftools.elf.elffile import ELFFile
@@ -312,7 +329,7 @@ def get_text_section(binary_path):
 def run(args, build_dir, track_time, report_dict):
     log_dir = os.path.join(build_dir, 'instrace_logs')
 
-    # obfuscation overhead is measured independently
+    # not longer needed: obfuscation overhead is measured independently
     # # run the binary without tracer and record the time to be able to
     # # report the overhead of the obfuscation
     # if track_time:
@@ -337,10 +354,17 @@ def run(args, build_dir, track_time, report_dict):
     text_section = get_text_section(args.input_file)
     start_time = timer()
     ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir, args.taint_backend, text_section)
+    report_dict['taint'] = timer() - start_time
+
+    # save trace size in report
+    try:
+        stat = os.stat(os.path.join(log_dir, 'instrace.log'))
+        report_dict['trace_size'] = float(stat.st_size)
+    except OSError:
+        report_dict['trace_size'] = -1
+
     if args.cleanup:
         shutil.rmtree(log_dir, ignore_errors=True)
-
-    report_dict['taint'] = timer() - start_time
     if not ret:
         report_dict[RESULT_KEY] = 'taint_failed'
         print('[-] run_taint_attack')
