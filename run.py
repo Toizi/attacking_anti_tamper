@@ -121,8 +121,8 @@ def run_binary(input_file, input_msg, args, success_exit_code, cwd, env):
         return False
     
     ret = False
-    # set half an hour timeout which should be more than enough for simple binaries to finish
-    timer = threading.Timer(1800, proc.kill)
+    # set 15 min timeout which should be more than enough for simple binaries to finish
+    timer = threading.Timer(60 * 15, proc.kill)
     try:
         timer.start()
         output = proc.communicate(input=input_msg)
@@ -189,7 +189,7 @@ def run_tracer(input_file, input_msg, log_dir, args, success_exit_code, cwd, env
         print(stderr_data)
     return success
 
-def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend, text_section):
+def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend, text_section, report_dict):
 
     text_section_arg = '--text-section {},{}'.format(text_section[0], text_section[1]) if text_section else ''
     if taint_backend == "python":
@@ -221,6 +221,11 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
     
     # "address", "asm_string", "data_hex"
     patches = patches['patches']
+
+    # save number of detected checkers
+    # (assuming each guard takes at most one patch since only cmovs/cjmps are patched)
+    report_dict['checkers_patched'] = len(patches)
+
     # address, binary data, cmd_string
     patches_r2_format = [
         (entry['address'],
@@ -353,15 +358,12 @@ def run(args, build_dir, track_time, report_dict):
     print('[*] run_taint_attack')
     text_section = get_text_section(args.input_file)
     start_time = timer()
-    ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir, args.taint_backend, text_section)
+    ret = run_taint_attack(args.input_file, build_dir, args.output, log_dir, args.taint_backend, text_section, report_dict)
     report_dict['taint'] = timer() - start_time
 
     # save trace size in report
-    try:
-        stat = os.stat(os.path.join(log_dir, 'instrace.log'))
-        report_dict['trace_size'] = float(stat.st_size)
-    except OSError:
-        report_dict['trace_size'] = -1
+    stat = os.stat(os.path.join(log_dir, 'instrace.log'))
+    report_dict['trace_size'] = float(stat.st_size)
 
     if args.cleanup:
         shutil.rmtree(log_dir, ignore_errors=True)
