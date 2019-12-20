@@ -73,6 +73,10 @@ def parse_args(argv):
     parser.add_argument("--build-dir",
         help="directory used to store temporary files (/tmp by default)",
         required=False)
+    parser.add_argument("--use-existing-results",
+        action="store_true",
+        help="reuse the build directory and only run evaluations where report.json "\
+            "does not exist yet. Has no effect if no build dir is specified")
     parser.add_argument("--cmdline-input", type=str, required=False,
         help="path to json file containing cmdline arguments/required files. " \
              "The directory of the file is where the required files will be expected")
@@ -158,6 +162,19 @@ def get_samples(input_dir, build_dir, cmdline_input_path):
 def run_obfuscation(obfuscation, cmd_info):
     # args has been made global in pool
     try:
+        # check if we have the result already
+        # if the report file exists, we are done
+        # if the build directory exists but the report doesn't, remove it
+        if args.use_existing_results:
+            if os.path.exists(obfuscation.build_path):
+                if os.path.exists(obfuscation.report_path):
+                    if args.verbose:
+                        print('skipping {} since report exists already'.format(
+                            obfuscation.build_path))
+                    return True
+                else:
+                    shutil.rmtree(obfuscation.build_path)
+
         # create build dir for obfuscation
         os.mkdir(obfuscation.build_path)
         # create symlink for easier debugging
@@ -229,10 +246,15 @@ def run_obfuscation(obfuscation, cmd_info):
         raise KeyboardInterruptError()
     return False
 
-def run_sample(sample, pool):
+def run_sample(args, sample, pool):
 
     # create build dir for sample
-    os.mkdir(sample.build_path)
+    if args.use_existing_results:
+        if not os.path.exists(sample.build_path):
+            os.mkdir(sample.build_path)
+    # will error out if we use a fresh build but paths exist already
+    else:
+        os.mkdir(sample.build_path)
 
     results = []
     # run each obfuscation in a process from the pool
@@ -311,7 +333,7 @@ def run(args, build_dir):
             results = []
             # get apply_async results from all of the obfuscations in all samples
             for sample in samples:
-                results.extend(run_sample(sample, pool))
+                results.extend(run_sample(args, sample, pool))
             pool.close()
 
             # make sure all of them executed
