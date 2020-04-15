@@ -70,3 +70,54 @@ This creates `patches.json` with a simple format.
 }
 ```
 Put `data_hex` at `address` to place the `asm_string` instruction there.
+
+## Helper Scripts
+### `./run.py`
+`./run.py` is the main entry point for manual execution of the attack.
+If you built the `taint_cpp` and `tracer` modules in `Release` mode it should
+work out of the box, otherwise you might have to adjust some paths in
+the `setup_environment` function.
+The only arguments that are needed for execution are
+- the binary to be executed (positional arg)
+- `--args` arguments that will be passed to the program
+- `-i/--input` data that will be written to stdin of the process
+
+There are a lot more arguments but most are fairly specific to the evaluation
+process used in the thesis.
+
+### `./eval.py`
+`./eval.py` is a script to run the attack on a whole batch of programs at once.
+Since it is unpractical to specify the characteristics of each program, i.e.
+which files and arguments it needs or what return code signals success, this
+is specified in a json file using the `--cmdline-input` switch.
+
+To evaluate the mibench samples, the following command was used
+`./eval.py self-checksumming/samples/protection_dataset_bin/seed_2 --crack-function mibench_dummy --cmdline-input self-checksumming/samples/cmdline-args/cmdline.json -j 3 --build-dir /home/eval/eval_build_dir/ --use-existing-results -o full_report.json`
+
+Some interesting observations:
+- the files in the input directory are expected to have the format
+`file_name+{obfuscation}.{coverage}`. If multiple obfuscations are used, they
+can be combined with a dash `-` such as `file_name+indir.10-virt.20`.
+Additionally it is expected that a `file_name+none.0` file exists for each
+`file_name`
+- `--crack-function` is used to specify the function that will be tampered to
+trigger tamper responses in protected binaries and after the patches from the
+attack have been applied to check that they are disabled. In this case, the
+dummy function that is inserted by the self-checking is used.
+- `-j 3` allows to specify how many processes to spawn in parallel. While the
+memory requirements are fairly low, the disk space requirements can get pretty
+high, depending on the samples that are evaluated. Therefore a low count is used
+despite having a lot more cores available
+- `--use-existing-results` allows to rerun some experiments or add new files to
+the input directory and just restart with the same command line as used before.
+Note that the script is not able to determine whether a run was interrupted.
+Thus you might have to clean up some directories in your `build-dir` manually
+in case you interrupted an execution where a report file was generated.
+
+### `./eval_report.py`
+To generate graphs from a report file from `./eval.py`, use `./eval_report.py`
+and supply the report path as argument. If no output directory was specified
+with `-o/--output`, an `eval` directory will be created in the directory of the
+input report.
+The generated reports will have two groupings. One is grouped by obfuscation
+configuration and the other by sample.

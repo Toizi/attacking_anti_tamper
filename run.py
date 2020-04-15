@@ -87,6 +87,7 @@ def setup_environment():
     mydir   = os.path.dirname(os.path.abspath(__file__))
     TRACER_PATH = os.path.abspath(os.path.join(mydir, 'build_tracer_Release', 'linux', 'run_manual.sh'))
     TAINT_CPP_PATH = os.path.abspath(os.path.join(mydir, 'build_taint_cpp_Release', 'linux/src', 'taint_main'))
+    # unused
     LIBMINM_PATH = os.path.abspath(os.path.join(mydir, 'self-checksumming', 'hook/build', 'libminm_env.so'))
     # analyze_path = os.path.join(mydir, 'taint', 'analyze.py')
     return True
