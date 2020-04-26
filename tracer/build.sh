@@ -12,8 +12,8 @@ if [ ! -d "${build_path}" ]; then
     mkdir -p ${build_path}
     cd ${build_path}
 
-    export CC=clang
-    export CXX=clang++
+    # export CC=clang
+    # export CXX=clang++
 
     cmake -G "Ninja" \
         -D "CMAKE_BUILD_TYPE:STRING=${build_type}" \
