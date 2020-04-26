@@ -34,9 +34,9 @@ def parse_args(argv):
     parser.add_argument("-o", "--output",
         help="output directory of the report",
         required=False)
-    parser.add_argument("--build-dir",
-        help="directory used to store temporary files (/tmp by default)",
-        required=False)
+    # parser.add_argument("--build-dir",
+    #     help="directory used to store temporary files (/tmp by default)",
+    #     required=False)
     parser.add_argument("-g", "--game", choices=['sauerbraten', 'crispy-doom'])
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--compare-sc", action="store_true",
@@ -104,7 +104,7 @@ def compute_basic_numbers(sample_dict):
         sample_dict['minimum'].append(frame_times[0])
         sample_dict['median'].append(frame_times[len(frame_times)//2])
         
-        frame_times_99pctl_idx = int(len(frame_times) * 0.99)
+        frame_times_99pctl_idx = int(len(frame_times) * 0.95)
         sample_dict['average_99pctl'].append(sum(frame_times[:frame_times_99pctl_idx]) / frame_times_99pctl_idx)
         sample_dict['maximum_99pctl'].append(frame_times[frame_times_99pctl_idx - 1])
 
@@ -148,8 +148,14 @@ def analyze_samples(args, samples):
         sample['binary_size'] = [float(stat.st_size)]
         compute_basic_numbers(sample)
     
+    # old notation didn't have the 0 for no coverage so just patch it up here
+    if 'none' in samples and 'none.0' not in samples:
+        samples['none.0'] = samples['none']
+        del samples['none']
+
     # compare it to the baseline of no obfuscation
     base_sample = samples['none.0']
+    del samples['none.0']
     for obf_str, sample in samples.items():
         compute_comparison(sample, base_sample)
     
@@ -229,10 +235,15 @@ def generate_graphs(args, samples):
     # coverages = ['0', '10', '20']
     # obfuscations = ['opaque', 'subst', 'indir', 'flatten']#, 'virt']
     coverages = set((obf_str.split('.')[1] for obf_str in samples))
+    coverages = list(coverages)
+    coverages.sort()
     obfuscations = set((obf_str.split('.')[0] for obf_str in samples))
     has_virt = 'virt' in obfuscations
     if 'virt' in obfuscations:
         obfuscations.remove('virt')
+    
+    obfuscations = list(obfuscations)
+    obfuscations.sort()
 
     # map obfuscations to positions on the chart
     x_start_pos = np.arange(len(obfuscations))
@@ -241,7 +252,8 @@ def generate_graphs(args, samples):
 
     # performance graphs
     for label_name, measurement in [('maximum 99pctl', 'maximum_99pctl_relative'),
-        ('median', 'median_relative'), ('binary size', 'binary_size_relative')]:
+        ('median', 'median_relative'), ('binary size', 'binary_size_relative'),
+        ('real_median', 'median')]:
         fig = plt.figure()
         fig.suptitle('{} frame times'.format(label_name))
         ax = fig.add_subplot(121 if has_virt else 111,
@@ -272,7 +284,9 @@ def generate_graphs(args, samples):
                 ax.bar([i* bar_width],
                     y,
                     width=bar_width,
-                    label='{} {}%'.format(label_name, coverage))
+                    )
+                    # already created due to first graph
+                    #label='{}% coverage'.format(coverage))
         fig.legend()
         figures['performance_' + measurement] = fig
 

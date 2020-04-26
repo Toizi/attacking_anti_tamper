@@ -12,7 +12,9 @@ def main():
         return 1
     
     instrace_path = os.path.join(tmp_dir, 'instrace_logs/instrace.log')
+    # instrace_path = '/home/marius/dev/attacking_anti_tamper/self-checksumming/instrace_logs/instrace.log' #os.path.join(tmp_dir, 'instrace_logs/instrace.log')
     log_path = os.path.join(tmp_dir, 'log.txt')
+    # log_path = '/tmp/taint_cpp.log' #os.path.join(tmp_dir, 'log.txt')
 
     ps_output = check_output(['ps', 'a']).decode().splitlines()
     for line in ps_output:
