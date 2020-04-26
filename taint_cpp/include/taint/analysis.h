@@ -1,6 +1,5 @@
 #pragma once
 #include <triton/api.hpp>
-#include <keystone/keystone.h>
 #include <triton/x86Specifications.hpp>
 #include <vector>
 #include <memory>
