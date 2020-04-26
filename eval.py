@@ -298,7 +298,13 @@ def analyze_reports(args, reports):
                 'self_check_triggered' : report.get('self_check_triggered'),
             }
             for val in analysis_values:
-                analysis[val + '_time'] = report.get(val)
+                x = report.get(val)
+                analysis[val + '_time'] = x or -1
+                if x is None:
+                    print('warning: no result for {} ({})'.format(
+                        obf_str, val
+                    ))
+                    continue
                 analysis[val + '_rel_overhead'] = report.get(val) / ref_report[val]
                 analysis[val + '_abs_overhead'] = report.get(val) - ref_report[val]
 
@@ -389,6 +395,7 @@ def main(argv):
     # or use a previously created build dir if analyze_dir is specified
     build_dir  = (tempfile.mkdtemp() if args.build_dir is None else args.build_dir)\
         if args.analyze_dir is None else args.analyze_dir
+    build_dir = os.path.abspath(build_dir)
     success = run(args, build_dir)
 
     print('[*] intermediate results: {}'.format(build_dir))

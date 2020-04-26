@@ -1,8 +1,17 @@
 ## Setup
+
+### Docker
+```bash
+cd docker_build
+docker build -t aat .
+```
+
+### Manual setup
 ```bash
 # clone this repo
 git clone --recursive https://github.com/Toizi/attacking_anti_tamper.git
 
+# to build applications with self-checking,
 # clone the self-checking repo and check out the right branch
 cd attacking_anti_tamper
 git clone https://github.com/Toizi/self-checksumming.git
@@ -10,24 +19,26 @@ cd self-checksumming && git checkout guard_obfuscation
 ```
 # Building the c++ modules
 Prerequisites:
-- clang/clang++
 - cmake
 - ninja
+- gcc/clang
+- g++/clang++
 
 On debian: `sudo apt update -y && sudo apt install -y clang clang++ ninja-build cmake`
 
 
 ## Build the tracer
 
-1. Download current DynamoRIO release from their [release page](https://github.com/DynamoRIO/dynamorio/releases), DynamoRIO-Linux-7.91.XXXXX.tar.gz (for tested version, see `tracer/build.sh`)
+1. Download current DynamoRIO release from their [release page](https://github.com/DynamoRIO/dynamorio/releases), [link to tested version](https://github.com/DynamoRIO/dynamorio/releases/download/release_8.0.0-1/DynamoRIO-Linux-8.0.0-1.tar.gz)
 2. Extract to parent directory
-3. Adjust `DynamoRIO_DIR` path in `tracer/build.sh` to fit downloaded package version [here](https://github.com/Toizi/attacking_anti_tamper/blob/4839aa42296648800b5daeb50666fa4e33fbb977/tracer/build.sh#L19-L24)
+3. Adjust `DynamoRIO_DIR` path in `tracer/build.sh` to fit downloaded package version [here](https://github.com/Toizi/attacking_anti_tamper/blob/4839aa42296648800b5daeb50666fa4e33fbb977/tracer/build.sh#L19-L24) when using a different version than the one tested
 4. Build desired configuration with `tracer/build.sh {Release|Debug|RelWithDebInfo}`
 5. Resulting files will be put into `build_tracer_{CONFIG}/linux`
 
 ## Build the taint module
-1. Build desired configuration with `taint_cpp/build.sh {Release|Debug|RelWithDebInfo}`
-2. Resulting files will be put into `build_taint_cpp_{CONFIG}/linux`
+1. Install [Triton's dependencies](https://triton.quarkslab.com/documentation/doxygen/#install_sec) (required version might be lower)
+2. Build desired configuration with `taint_cpp/build.sh {Release|Debug|RelWithDebInfo}`
+3. Resulting files will be put into `build_taint_cpp_{CONFIG}/linux`
 
 # Usage
 
@@ -91,8 +102,13 @@ Since it is unpractical to specify the characteristics of each program, i.e.
 which files and arguments it needs or what return code signals success, this
 is specified in a json file using the `--cmdline-input` switch.
 
-To evaluate the mibench samples, the following command was used
-`./eval.py self-checksumming/samples/protection_dataset_bin/seed_2 --crack-function mibench_dummy --cmdline-input self-checksumming/samples/cmdline-args/cmdline.json -j 3 --build-dir /home/eval/eval_build_dir/ --use-existing-results -o full_report.json`
+To evaluate the mibench samples, the following command was used.
+See self-checksumming README on how to compile them.
+```bash
+# build dir is good to have in case the process is interrupted, otherwise /tmp is used
+mkdir eval_build_dir
+./eval.py self-checksumming/samples/protection_dataset_bin/seed_2 --crack-function mibench_dummy --cmdline-input self-checksumming/samples/cmdline-args/cmdline.json -j 3 --build-dir ./eval_build_dir --use-existing-results -o full_report.json`
+```
 
 Some interesting observations:
 - the files in the input directory are expected to have the format
