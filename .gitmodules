@@ -1,6 +1,6 @@
 [submodule "taint_cpp/extern/Triton"]
 	path = taint_cpp/extern/Triton
-	url = git@github.com:Toizi/Triton.git
+	url = https://github.com/JonathanSalwan/Triton.git
 [submodule "taint_cpp/extern/fmt"]
 	path = taint_cpp/extern/fmt
 	url = https://github.com/fmtlib/fmt.git
