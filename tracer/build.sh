@@ -15,12 +15,11 @@ if [ ! -d "${build_path}" ]; then
     export CC=clang
     export CXX=clang++
 
-        # -D "DynamoRIO_DIR:PATH=${mypath}/../../DynamoRIO-Linux-7.1.0-1/cmake" \
     cmake -G "Ninja" \
         -D "CMAKE_BUILD_TYPE:STRING=${build_type}" \
         -D "CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=1" \
         -D "CMAKE_INSTALL_PREFIX=${out_path}" \
-        -D "DynamoRIO_DIR:PATH=${mypath}/../../DynamoRIO-x86_64-Linux-7.91.18130-0/cmake" \
+        -D "DynamoRIO_DIR:PATH=${mypath}/../../DynamoRIO-Linux-8.0.0-1/cmake" \
         ../../tracer
 fi
 
