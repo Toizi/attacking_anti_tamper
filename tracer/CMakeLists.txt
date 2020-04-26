@@ -5,7 +5,8 @@ add_library(instrace_x86 SHARED instrace_x86.cpp utils.cpp)
 if (MSVC)
 
 else()
-  target_compile_options(instrace_x86 PRIVATE "-Werror" "-Wall" "-Wextra" "-Wno-missing-field-initializers")
+  target_compile_options(instrace_x86 PRIVATE "-Wall" "-Wextra" "-Wno-missing-field-initializers")
+  # target_compile_options(instrace_x86 PRIVATE "-Werror")
 endif()
 
 find_package(DynamoRIO)
