@@ -296,6 +296,7 @@ def analyze_reports(args, reports):
                 'build_path'           : report.get('build_path'),
                 'attack_result'        : report.get('attack_result'),
                 'self_check_triggered' : report.get('self_check_triggered'),
+                'trace_size'           : report.get('trace_size')
             }
             for val in analysis_values:
                 x = report.get(val)

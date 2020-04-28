@@ -16,8 +16,9 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import numbers
+import math
 from typing import List, Dict, Any
-from adjustText import adjust_text
+# from adjustText import adjust_text
 
 compare_sc_names = ['nocheck', 'targeted', 'full']
 
@@ -251,15 +252,20 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             yscale='log',
             xlabel='number of instructions',
             ylabel='attack time in seconds')
-        ax.set_ylim((0.65, None))
-        
+
         # collect maximum trace size in case we have a failed tracer/taint
         # entry that we need to put somewhere
         max_trace_size = -1
+        max_attack_time = -1
         for result in config:
             trace_size = result.get('trace_size') or -1
             if trace_size > max_trace_size:
                 max_trace_size = trace_size
+            attack_time = (result.get('tracer_time', 0) + result.get('taint_time', 0)) - 1
+            if attack_time > max_attack_time:
+                max_attack_time = attack_time
+
+        ax.set_ylim(bottom=0.65, top=max_attack_time*1.4)
 
         for result in config:
             # print(result)
@@ -339,15 +345,20 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             yscale='log',
             xlabel='number of instructions',
             ylabel='attack time in seconds')
-        ax.set_ylim((0.65, None))
 
         # collect maximum trace size in case we have a failed tracer/taint
         # entry that we need to put somewhere
         max_trace_size = -1
+        max_attack_time = -1
         for result in results:
             trace_size = result.get('trace_size') or -1
             if trace_size > max_trace_size:
                 max_trace_size = trace_size
+            attack_time = (result.get('tracer_time', 0) + result.get('taint_time', 0)) - 1
+            if attack_time > max_attack_time:
+                max_attack_time = attack_time
+
+        ax.set_ylim(bottom=0.65, top=max_attack_time*1.4)
 
         for result in results:
             if result['attack_result'] in ('tracer_failed', 'taint_failed'):
