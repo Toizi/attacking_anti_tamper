@@ -103,7 +103,8 @@ which files and arguments it needs or what return code signals success, this
 is specified in a json file using the `--cmdline-input` switch.
 
 To evaluate the mibench samples, the following command was used.
-See self-checksumming README on how to compile them.
+See [self-checksumming](https://github.com/Toizi/self-checksumming/tree/guard_obfuscation)
+README on how to compile them.
 ```bash
 # build dir is good to have in case the process is interrupted, otherwise /tmp is used
 mkdir eval_build_dir
