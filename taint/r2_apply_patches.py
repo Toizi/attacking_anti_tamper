@@ -25,15 +25,17 @@ def patch_program(input_path, output_path, data):
     apply_patch(output_path, data)
     return True
 
-def crack_function(input_path, fname):
+def crack_function(input_path, fname, check_func_exists=True):
     r2 = r2pipe.open(input_path, ['-w'])
-    r2.cmd('aa')
-    funcs = r2.cmdj('aflj')
-    fnames = [func['name'] for func in funcs]
     r2_fname = 'sym.{}'.format(fname)
-    if r2_fname not in fnames:
-        print('function {} not in list of functions {}'.format(r2_fname, fnames))
-        return False
+
+    if check_func_exists:
+        r2.cmd('aa')
+        funcs = r2.cmdj('aflj')
+        fnames = [func['name'] for func in funcs]
+        if r2_fname not in fnames:
+            print('function {} not in list of functions {}'.format(r2_fname, fnames))
+            return False
     r2.cmd('"wa xor eax, eax; ret" @ {}'.format(r2_fname))
     r2.quit()
     return True
