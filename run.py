@@ -18,6 +18,7 @@ import binascii
 import filecmp
 import re
 import threading
+import signal
 from pprint import pprint
 
 from taint.r2_apply_patches import crack_function, patch_program
@@ -214,8 +215,32 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
     ]
     if text_section_arg:
         cmd.append(text_section_arg)
-    if run_cmd(cmd) is not True:
+    
+    # if run_cmd(cmd) is not True:
+    #     return False
+
+    try:
+        proc = subprocess.Popen(cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+    except OSError:
+        traceback.print_exc()
         return False
+
+    def stop_taint_cpp():
+        # if we get really unlucky, this might happen exactly when the emulation
+        # is done and the signal is not being caught but the probability should
+        # be very low
+        proc.send_signal(signal.SIGINT)
+        # mark that we timed out
+        report_dict['timeout'] = True
+    
+    timer = threading.Timer(36 * 60 * 60, stop_taint_cpp)
+    try:
+        timer.start()
+        proc.wait()
+    finally:
+        timer.cancel()
 
     with open(patches_path, 'r') as f:
         patches = json.load(f)
