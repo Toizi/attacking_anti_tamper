@@ -220,9 +220,7 @@ def run_taint_attack(input_file, build_dir, output_file, log_dir, taint_backend,
     #     return False
 
     try:
-        proc = subprocess.Popen(cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
+        proc = subprocess.Popen(cmd)
     except OSError:
         traceback.print_exc()
         return False
