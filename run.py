@@ -112,7 +112,8 @@ def run_binary(input_file, input_msg, args, success_exit_code, cwd, env):
         cmd.extend(shlex.split(args))
 
     try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+        proc = subprocess.Popen(' '.join(cmd), stdin=subprocess.PIPE,
+            shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
