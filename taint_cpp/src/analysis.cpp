@@ -287,9 +287,26 @@ bool TaintAnalysis::emulate(LazyTraceLoader &trace,
             inst.setAddress(pc);
 
             bool skip_instruction = false;
+            bool successfully_executed = false;
+            try {
+		// for some reason, tetris flatten.10 seems to throw a cannot
+		// disassemble instruction sometimes, we simply catch it here
+		// and proceed
+                successfully_executed = api.processing(inst);
+            } catch (const triton::exceptions::Exception &e) {
+                // we don't want to terminate
+                // just clear the instruction
+                inst.clear();
+                fmt::print("exception in processing:\n{}", e.what());
+                for (int blub = 0; blub < 16; ++blub) {
+                    fmt::print("{:02x} ", opcodes[blub]);
+                }
+                fmt::print("\n");
+            }
             // execute the instruction
-            if (!api.processing(inst))
+            if (!successfully_executed)
             {
+		// uncomment if you care about hitting unsupported instructions
                 if (false) {
                     // in case it is not a known instruction to skip, error out
                     if (std::find(skipped_instructions.begin(), skipped_instructions.end(), inst.getType()) == skipped_instructions.end())
