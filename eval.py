@@ -293,11 +293,11 @@ def analyze_reports(args, reports):
 
             analysis = {
                 'sample_base'          : sample.base_path,
-                'build_path'           : report.get('build_path'),
-                'attack_result'        : report.get('attack_result'),
-                'self_check_triggered' : report.get('self_check_triggered'),
-                'trace_size'           : report.get('trace_size')
             }
+            # transfer all of the items to the new dict
+            for key, val in report.items():
+                analysis[key] = val
+
             for val in analysis_values:
                 x = report.get(val)
                 analysis[val + '_time'] = x or -1
