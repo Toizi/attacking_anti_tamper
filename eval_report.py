@@ -237,6 +237,12 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
     additionally each x axis entry contains multiple coverages"""
     figures = {}
 
+    success_color = '#03fc3d'
+    failure_color = '#fc6f03'
+    colors = [success_color, failure_color]
+    cmap = mpl.colors.ListedColormap(colors)
+
+    legend_descriptions = ['success', 'failure', 'timeout threshold']
     # create all of the figures grouped by configuration
     for config_name, config in report.items():
         x = []
@@ -257,6 +263,8 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
         # entry that we need to put somewhere
         max_trace_size = -1
         max_attack_time = -1
+        min_attack_time = 2 ** 16
+        timeout_value = None
         for result in config:
             trace_size = result.get('trace_size') or -1
             if trace_size > max_trace_size:
@@ -264,8 +272,12 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             attack_time = (result.get('tracer_time', 0) + result.get('taint_time', 0)) - 1
             if attack_time > max_attack_time:
                 max_attack_time = attack_time
+            if attack_time < min_attack_time:
+                min_attack_time = attack_time
+            if result.get('timeout') is True:
+                timeout_value = result.get('taint_time')
 
-        ax.set_ylim(bottom=0.65, top=max_attack_time*1.4)
+        ax.set_ylim(bottom=0.65 * min_attack_time, top=max_attack_time*1.4)
 
         for result in config:
             # print(result)
@@ -284,12 +296,11 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
                 x.append(result['trace_size'] // 8)
                 y.append(result['tracer_time'] + result['taint_time'])
                 # z.append(result['checkers_patched'] / result['self_check_triggered'])
-                c.append('#03fc3d' if result['attack_result'] == 'success' else '#fc6f03')
+                c.append(colors.index(success_color) if result['attack_result'] == 'success'
+                        else colors.index(failure_color))
 
-        ax.scatter(x, y, c=c,
-            # s=mpl.rcParams['lines.markersize'] ** 3,
+        scatter = ax.scatter(x, y, c=c, cmap=cmap,
             alpha=0.5,
-            # linewidth=5,
             edgecolors='black')
         
         # texts = []
@@ -299,27 +310,16 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
 
         # adjust_text(texts, arrowprops={'arrowstyle': '->', 'color': 'red'})
         # fig.show()
+        # put annotation that shows where the timeout threshold is
+        if timeout_value:
+            ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
+            # TODO
+            # ax.text(x=max_trace_size*0.5, y=timeout_value,
+            #     s='taint analysis timeout threshold', alpha=0.7)
+
+        ax.legend(handles=scatter.legend_elements()[0], labels=legend_descriptions)
         figures[config_name] = fig
 
-    # axes = {}
-    # # create all figures grouped by sample
-    # for config_name, config in report.items():
-    #     for result in config:
-    #         sample_name = os.path.basename(result['sample_base'])
-
-    #         # create new figure/axis if there is none for this sample
-    #         if sample_name not in figures:
-    #             fig = plt.figure(num=sample_name, figsize=(20/2.54, 15/2.54))
-    #             fig.suptitle(sample_name)
-    #             ax = fig.add_subplot(111,
-    #                 xscale='log',
-    #                 yscale='log',
-    #                 xlabel='number of instructions',
-    #                 ylabel='attack time in seconds')
-    #             axes[sample_name] = ax
-    #             figures[sample_name] = fig
-            
-    #         ax = axes[sample_name]
 
     # group results by sample_name
     sample_names = defaultdict(list)
@@ -350,6 +350,9 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
         # entry that we need to put somewhere
         max_trace_size = -1
         max_attack_time = -1
+        min_attack_time = 2 ** 16
+        # whether the batch has a timeout
+        timeout_value = None
         for result in results:
             trace_size = result.get('trace_size') or -1
             if trace_size > max_trace_size:
@@ -357,8 +360,12 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             attack_time = (result.get('tracer_time', 0) + result.get('taint_time', 0)) - 1
             if attack_time > max_attack_time:
                 max_attack_time = attack_time
+            if attack_time < min_attack_time:
+                min_attack_time = attack_time
+            if result.get('timeout') is True:
+                timeout_value = result.get('taint_time')
 
-        ax.set_ylim(bottom=0.65, top=max_attack_time*1.4)
+        ax.set_ylim(bottom=0.65 * min_attack_time, top=max_attack_time*1.4)
 
         for result in results:
             if result['attack_result'] in ('tracer_failed', 'taint_failed'):
@@ -372,86 +379,30 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
                 x.append(result['trace_size'] // 8)
                 y.append(result['tracer_time'] + result['taint_time'])
                 # z.append(result['checkers_patched'] / result['self_check_triggered'])
-                c.append('#03fc3d' if result['attack_result'] == 'success' else '#fc6f03')
+                # c.append(success_color if result['attack_result'] == 'success' else failure_color)
+                c.append(colors.index(success_color) if result['attack_result'] == 'success'
+                    else colors.index(failure_color))
 
-        ax.scatter(x, y, c=c,
+
+        scatter = ax.scatter(x, y, c=c, cmap=cmap,
             # s=mpl.rcParams['lines.markersize'] ** 3,
             alpha=0.5,
             # linewidth=5,
             edgecolors='black')
 
+        # put annotation that shows where the timeout threshold is
+        handles = scatter.legend_elements()[0]
+        if timeout_value:
+            axhline = ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
+            handles.append(axhline)
+            # TODO
+            # ax.text(x=max_trace_size*0.5, y=timeout_value,
+            #     s='taint analysis timeout threshold', alpha=0.7)
 
+        print(f'handles: {handles}')
+        ax.legend(handles=handles, labels=legend_descriptions)
         figures[sample_name] = fig
 
-
-
-    # # collect the different coverages by obfuscation
-    # coverages = defaultdict(set)
-    # for obf_info in samples.values():
-    #     for obf_str in obf_info:
-    #         base_obf, _, coverage = obf_str.partition('.')
-    #         coverages[base_obf].add(int(coverage))
-    
-    # # sort coverages and convert them to string
-    # for base_obf_str in coverages:
-    #     # convert to list for sorting
-    #     coverage = list(coverages[base_obf_str])
-    #     coverage.sort()
-    #     # convert back to string for labelling
-    #     coverage = [str(c) for c in coverage]
-    #     coverages[base_obf_str] = coverage
-
-    # # maybe add more than one measurement in the future
-    # measurement_str = 'cputime_relative'
-    # # each obfuscation is handled in its own graph
-    # for base_obf_str in coverages:
-    #     # don't create graph for no protection relative to itself
-    #     if base_obf_str == 'none' and '_relative' in measurement_str:
-    #         continue
-    #     obf_coverages = coverages[base_obf_str]
-
-    #     fig = plt.figure()
-    #     fig.suptitle('{} overhead'.format(base_obf_str))
-
-    #     # how much space a single group (in this case a sample) should occupy
-    #     group_width = 1.0
-    #     margin = 0.01
-    #     # how wide the bars should be.
-    #     # bar_width * len(coverages) should be less than 1 to avoid overlapping
-    #     # bar_width < 1.0/len(coverages)
-    #     bar_width = (group_width - 0.1) / len(obf_coverages) # -0.1 to allow for margin
-    #     # map sample names to positions on the chart
-    #     xticks = [r * group_width for r in range(len(samples.keys()))]
-
-    #     ax = fig.add_subplot(111,
-    #         yscale='linear',
-    #         ylabel='Overhead in percent',
-    #         xticks=xticks)
-    #     ax.set_xticklabels(samples.keys(), rotation=90)
-    
-    #     # go through all of the samples and collect the values for the coverages
-    #     for i, sample_name in enumerate(samples):
-    #         obf_info = samples[sample_name]
-    #         x_start_pos = np.arange(len(obf_coverages))
-    #         y = []
-    #         for coverage in obf_coverages:
-    #             obf_coverage_str = base_obf_str + '.' + coverage
-    #             measurements = obf_info.get(obf_coverage_str)
-    #             if not measurements:
-    #                 print('[-] no measurements found for obfuscation {}, sample {}'.format(
-    #                     obf_coverage_str, sample_name))
-    #                 return False
-    #             y.append(measurements[measurement_str])
-
-
-    #         x = []
-    #         start_pos = i - (group_width/2) + (bar_width/2)
-    #         for j, _ in enumerate(x_start_pos):
-    #             x.append(start_pos + j * bar_width)
-    #         ax.bar(x, y,
-    #             width=bar_width - margin,
-    #             label='{}%'.format(sample_name))
-    #     figures[base_obf_str] = fig
 
     return figures
 
