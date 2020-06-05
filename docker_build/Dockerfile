@@ -6,7 +6,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN mkdir -p /home/sip && \
     apt-get update -y && apt-get install -y unzip wget curl git libpython-dev python3 python3-pip python-pip ninja-build clang cmake radare2 libncurses5-dev && \
     apt-get upgrade -y --autoremove && \
-    python3 -m pip install pip --upgrade && python3 -m pip install r2pipe && \
+    python3 -m pip install pip --upgrade && python3 -m pip install r2pipe matplotlib && \
     python -m pip install r2pipe pyelftools
 
 WORKDIR /home/sip
