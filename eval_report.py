@@ -212,6 +212,13 @@ def generate_graphs_sc_compare(args, samples):
 
     return figures
 
+friendly_names = {
+    'virt': 'virtualization',
+    'flatten': 'control flow flattening',
+    'opaque': 'opaque predicates',
+    'indir': 'control flow indirection',
+    'subst': 'instruction subsitution'
+}
 def get_friendly_config_name(name):
     """transforms a string that looks like obfuscation.coverage to something
     more friendly that can be read without knowing the notation"""
@@ -219,13 +226,6 @@ def get_friendly_config_name(name):
         return 'without obfuscation'
     
     obf_name, coverage = name.split('.')
-    friendly_names = {
-        'virt': 'virtualization',
-        'flatten': 'control flow flattening',
-        'opaque': 'opaque predicates',
-        'indir': 'control flow indirection',
-        'subst': 'instruction subsitution'
-    }
     return 'checkers + {coverage}% of functions protected with {obf:s}'.format(
         coverage=coverage, obf=friendly_names[obf_name]
     )
@@ -252,7 +252,7 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
 
 
         fig = plt.figure(num=config_name, figsize=(20/2.54, 15/2.54))
-        fig.suptitle(get_friendly_config_name(config_name))
+        # fig.suptitle(get_friendly_config_name(config_name))
         ax = fig.add_subplot(111,
             xscale='log',
             yscale='log',
@@ -320,6 +320,88 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
         ax.legend(handles=scatter.legend_elements()[0], labels=legend_descriptions)
         figures[config_name] = fig
 
+    # create all non-virt obfuscations in one
+    fig = plt.figure(num='combined_non-virt', figsize=(20/2.54, 15/2.54))
+    num_added = 0
+    for config_name, config in report.items():
+        if config_name not in ('indir.0', 'flatten.0', 'opaque.0', 'subst.0'):
+            continue
+
+        x = []
+        y = []
+        z = []
+        c = []
+
+
+        num_added += 1
+        ax = fig.add_subplot(2, 2, num_added,
+            xscale='log',
+            yscale='log',
+            xlabel='number of instructions' if num_added == 3 else None,
+            ylabel='attack time in seconds' if num_added == 3 else None,
+            title=friendly_names[config_name.partition('.')[0]])
+
+        # collect maximum trace size in case we have a failed tracer/taint
+        # entry that we need to put somewhere
+        max_trace_size = -1
+        max_attack_time = -1
+        min_attack_time = 2 ** 16
+        timeout_value = None
+        for result in config:
+            trace_size = result.get('trace_size') or -1
+            if trace_size > max_trace_size:
+                max_trace_size = trace_size
+            attack_time = (result.get('tracer_time', 0) + result.get('taint_time', 0)) - 1
+            if attack_time > max_attack_time:
+                max_attack_time = attack_time
+            if attack_time < min_attack_time:
+                min_attack_time = attack_time
+            if result.get('timeout') is True:
+                timeout_value = result.get('taint_time')
+
+        ax.set_ylim(bottom=0.65 * min_attack_time, top=max_attack_time*1.4)
+
+        for result in config:
+            # print(result)
+            # ispell is broken and does not even trigger any checkers
+            if '/ispell.x/' in result['build_path']:
+                continue
+
+            if result['attack_result'] in ('tracer_failed', 'taint_failed'):
+                # the failed entries are ones where we ran out of disk space
+                # so we put these at the maximum number of instructions
+                # with a close to zero (since log, 1) attack time
+                x.append(max_trace_size)
+                y.append(1)
+                c.append('#404040')
+            else:
+                x.append(result['trace_size'] // 8)
+                y.append(result['tracer_time'] + result['taint_time'])
+                # z.append(result['checkers_patched'] / result['self_check_triggered'])
+                c.append(colors.index(success_color) if result['attack_result'] == 'success'
+                        else colors.index(failure_color))
+
+        scatter = ax.scatter(x, y, c=c, cmap=cmap,
+            alpha=0.5,
+            edgecolors='black')
+        
+        # texts = []
+        # # add the success rate in the middle
+        # for i in range(len(z)):
+        #     texts.append(ax.text(x[i], y[i], '{}'.format(z[i])))
+
+        # adjust_text(texts, arrowprops={'arrowstyle': '->', 'color': 'red'})
+        # fig.show()
+        # put annotation that shows where the timeout threshold is
+        if timeout_value:
+            ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
+            # TODO
+            # ax.text(x=max_trace_size*0.5, y=timeout_value,
+            #     s='taint analysis timeout threshold', alpha=0.7)
+
+        if num_added == 3:
+            ax.legend(handles=scatter.legend_elements()[0], labels=legend_descriptions)
+    figures['combined_non-virt'] = fig
 
     # group results by sample_name
     sample_names = defaultdict(list)
@@ -339,7 +421,7 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
         c = []
 
         fig = plt.figure(num=sample_name, figsize=(20/2.54, 15/2.54))
-        fig.suptitle(sample_name)
+        # fig.suptitle(sample_name)
         ax = fig.add_subplot(111,
             xscale='log',
             yscale='log',
@@ -399,7 +481,6 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             # ax.text(x=max_trace_size*0.5, y=timeout_value,
             #     s='taint analysis timeout threshold', alpha=0.7)
 
-        print(f'handles: {handles}')
         ax.legend(handles=handles, labels=legend_descriptions)
         figures[sample_name] = fig
 
