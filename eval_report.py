@@ -303,21 +303,13 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             alpha=0.5,
             edgecolors='black')
         
-        # texts = []
-        # # add the success rate in the middle
-        # for i in range(len(z)):
-        #     texts.append(ax.text(x[i], y[i], '{}'.format(z[i])))
-
-        # adjust_text(texts, arrowprops={'arrowstyle': '->', 'color': 'red'})
-        # fig.show()
         # put annotation that shows where the timeout threshold is
+        handles = scatter.legend_elements()[0]
         if timeout_value:
-            ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
-            # TODO
-            # ax.text(x=max_trace_size*0.5, y=timeout_value,
-            #     s='taint analysis timeout threshold', alpha=0.7)
+            axhline = ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
+            handles.append(axhline)
 
-        ax.legend(handles=scatter.legend_elements()[0], labels=legend_descriptions)
+        ax.legend(handles=handles, labels=legend_descriptions)
         figures[config_name] = fig
 
     # create all non-virt obfuscations in one
@@ -393,14 +385,13 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
         # adjust_text(texts, arrowprops={'arrowstyle': '->', 'color': 'red'})
         # fig.show()
         # put annotation that shows where the timeout threshold is
+        handles = scatter.legend_elements()[0]
         if timeout_value:
-            ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
-            # TODO
-            # ax.text(x=max_trace_size*0.5, y=timeout_value,
-            #     s='taint analysis timeout threshold', alpha=0.7)
+            axhline = ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
+            handles.append(axhline)
 
         if num_added == 3:
-            ax.legend(handles=scatter.legend_elements()[0], labels=legend_descriptions)
+            ax.legend(handles=handles, labels=legend_descriptions)
     figures['combined_non-virt'] = fig
 
     # group results by sample_name
@@ -477,9 +468,6 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
         if timeout_value:
             axhline = ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
             handles.append(axhline)
-            # TODO
-            # ax.text(x=max_trace_size*0.5, y=timeout_value,
-            #     s='taint analysis timeout threshold', alpha=0.7)
 
         ax.legend(handles=handles, labels=legend_descriptions)
         figures[sample_name] = fig
