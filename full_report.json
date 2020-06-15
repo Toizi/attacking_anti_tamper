@@ -1930,6 +1930,22 @@
     }
   ], 
   "virt.10": [
+	{
+      "build_path": "/home/sip/attacking_anti_tamper/eval_build_dir/toast.x/virt.10", 
+      "taint_time": 36929.420737981796, 
+      "taint": 36929.420737981796, 
+      "tracer": 40.184075117111206, 
+      "taint_rel_overhead": 28.23709843693774, 
+      "tracer_time": 40.184075117111206, 
+      "trace_size": 10513262768.0, 
+      "checkers_patched": 3, 
+      "sample_base": "self-checksumming/samples/protection_dataset_bin/seed_11/toast.x", 
+      "tracer_abs_overhead": 38.46339511871338, 
+      "taint_abs_overhead": 35621.58732795715, 
+      "tracer_rel_overhead": 23.353601572940764, 
+      "self_check_triggered": 3, 
+      "attack_result": "success"
+    }, 
     {
       "build_path": "/home/sip/attacking_anti_tamper/eval_build_dir/search_large.x/virt.10", 
       "taint_time": 804.344141960144, 
@@ -2526,6 +2542,22 @@
     }
   ], 
   "virt.20": [
+	{
+      "build_path": "/home/sip/attacking_anti_tamper/eval_build_dir/toast.x/virt.20", 
+      "taint_time": 42674.62581396103, 
+      "taint": 42674.62581396103, 
+      "tracer": 47.15792512893677, 
+      "taint_rel_overhead": 32.630016550163624, 
+      "tracer_time": 47.15792512893677, 
+      "trace_size": 12358031720.0, 
+      "checkers_patched": 3, 
+      "sample_base": "self-checksumming/samples/protection_dataset_bin/seed_11/toast.x", 
+      "tracer_abs_overhead": 45.43724513053894, 
+      "taint_abs_overhead": 41366.792403936386, 
+      "tracer_rel_overhead": 27.406563203411917, 
+      "self_check_triggered": 3, 
+      "attack_result": "success"
+    }, 
     {
       "build_path": "/home/sip/attacking_anti_tamper/eval_build_dir/search_large.x/virt.20", 
       "taint_time": 871.2699151039124, 
