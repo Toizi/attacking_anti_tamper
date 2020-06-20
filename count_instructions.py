@@ -8,10 +8,12 @@ import json
 from glob import glob
 
 test_commands = {
-    'ls /bin': ['ls', '-lah', '/bin'],
-    'echo Hello World!': ['echo', "Hello World!"],
-    'cat /bin/bash': ['cat', '/bin/bash'],
-    'find bash in /bin': ['find', '/bin', '-name', 'bash'],
+    'ls -lah /bin': ['/bin/ls', '-lah', '/bin'],
+    'grep Hello hello_world.c': ['/bin/grep', 'Hello', 'count_instructions_samples/hello_world.c'],
+    'Hello World!': ['count_instructions_samples/hello_world'],
+    'Fibonacci to 1000': ['count_instructions_samples/fibonacci', '1000'],
+    'FizzBuzz to 1000': ['count_instructions_samples/fizz_buzz', '1000'],
+    'Count to 2^24': ['count_instructions_samples/count_to', '16777216'],
 }
 
 friendly_names_map = {
@@ -21,7 +23,7 @@ friendly_names_map = {
     'rijndael.x': 'rijndael',
     'tetris_predet': 'tetris',
     '2048_game': '2048 (game)',
-    'bf.x': 'bf',
+    'bf.x': 'blowfish',
     'basicmath_small.x': 'basicmath_small',
     'qsort_large.x': 'qsort_large',
     'basicmath_large.x': 'basicmath_large',
@@ -29,7 +31,7 @@ friendly_names_map = {
     'patricia.x': 'patricia',
     'sha': 'sha',
     'crc.x': 'crc',
-    'dijkstra_small.x': 'dijstra_small',
+    'dijkstra_small.x': 'dijkstra_small',
     'qsort_small.x': 'qsort_small',
     'rawcaudio.x': 'rawcaudio',
     'rawdaudio.x': 'rawdaudio',
@@ -98,11 +100,18 @@ def main():
 
         execution_trace_path = os.path.join(build_dir, 'instrace_logs/instrace.log')
         for name, cmd in test_commands.items():
-            subprocess.check_output([tracer_path] + cmd, cwd=build_dir,
+            final_cmd = [tracer_path]
+            for c in cmd:
+                if os.path.exists(c):
+                    c = os.path.abspath(c)
+                final_cmd.append(c)
+            subprocess.check_output(
+                final_cmd,
+                cwd=build_dir,
                 stderr=subprocess.STDOUT)
             stat = os.stat(execution_trace_path)
             instr_count = stat.st_size // 8
-            print(f'{name: <20} | {instr_count: >15}')
+            print(f'{name: <24} & {instr_count//1000: >15,} \\\\')
 
         results.sort(key=lambda x: x[1]) 
         median = results[len(results) // 2]
