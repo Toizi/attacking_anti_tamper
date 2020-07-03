@@ -230,7 +230,7 @@ def get_friendly_config_name(name):
         coverage=coverage, obf=friendly_names[obf_name]
     )
 
-def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
+def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]], scale):
     """we want to generate a separate graph for each configuration
     (same obfuscation + coverage).
     x axis is size of trace, y axis is attack time, color is attack result
@@ -242,20 +242,28 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
     colors = [success_color, failure_color]
     cmap = mpl.colors.ListedColormap(colors)
 
-    legend_descriptions = ['success', 'failure', 'timeout threshold']
+    data_by_config = {
+        'virt': {},
+        'indir': {},
+        'flatten': {},
+        'opaque': {},
+        'subst': {},
+    }
+
     # create all of the figures grouped by configuration
     for config_name, config in report.items():
+        legend_descriptions = ['success', 'failure']
         x = []
         y = []
         z = []
         c = []
 
 
-        fig = plt.figure(num=config_name, figsize=(20/2.54, 15/2.54))
+        fig = plt.figure(num=f'{config_name}_{scale}', figsize=(20/2.54, 15/2.54))
         # fig.suptitle(get_friendly_config_name(config_name))
         ax = fig.add_subplot(111,
-            xscale='log',
-            yscale='log',
+            xscale=scale,
+            yscale=scale,
             xlabel='number of instructions',
             ylabel='attack time in seconds')
 
@@ -290,7 +298,7 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
                 # so we put these at the maximum number of instructions
                 # with a close to zero (since log, 1) attack time
                 x.append(max_trace_size)
-                y.append(1)
+                y.append(1 if scale == 'log' else 0)
                 c.append('#404040')
             else:
                 x.append(result['trace_size'] // 8)
@@ -303,17 +311,66 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             alpha=0.5,
             edgecolors='black')
         
+        obf_name, _, coverage = config_name.partition('.')
+        if obf_name != 'none':
+            data_by_config[obf_name][coverage] = (x, y, c)
+        
         # put annotation that shows where the timeout threshold is
         handles = scatter.legend_elements()[0]
         if timeout_value:
             axhline = ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
             handles.append(axhline)
+            legend_descriptions.append('timeout threshold')
+
+        # if scale == 'linear' and 'none.0' in config_name:
+        if 'none.0' in config_name:
+            max_x = max(x)
+            max_y = max(y)
+            # plot a line from 0 to max to demonstrate that scaling appears to
+            # be linear
+            # handles.append(
+            ax.plot([0, max_x, max_x * 1.3], [0, max_y, max_y * 1.3],
+                    linestyle='dotted', color='gray', label='linear scaling')
+                    # )
+                    #[1])
+            # legend_descriptions.append('linear scaling')
+
 
         ax.legend(handles=handles, labels=legend_descriptions)
-        figures[config_name] = fig
+        figures[f'{config_name}_{scale}'] = fig
+    
+    # create one figure for each config. each figure contains all 3 coverages
+    # side by side
+    # pprint(data_by_config)
+    cov_styles = {
+        '0': "o",
+        '10': "X",
+        '20': "D",
+    }
+    cov_colors = {
+        '0': "black",
+        '10': "blue",
+        '20': "violet",
+    }
+    for config_name, coverages in data_by_config.items():
+        fig = plt.figure(num=f'combined_{config_name}_{scale}', figsize=(20/2.54, 15/2.54))
+        ax = fig.add_subplot(1, 1, 1,
+            xscale=scale, yscale=scale,
+            xlabel='number of instructions',
+            ylabel='attack time in seconds')
+            # title=f'{cov}%')
+        for cov in ('0', '10', '20'):
+            x, y, c = coverages[cov]
+            scatter = ax.scatter(x, y, c=c, cmap=cmap,
+                alpha=0.5,
+                marker=cov_styles[cov],
+                edgecolors=cov_colors[cov])
+        figures[f'combined_{config_name}_{scale}'] = fig
+
+
 
     # create all non-virt obfuscations in one
-    fig = plt.figure(num='combined_non-virt', figsize=(20/2.54, 15/2.54))
+    fig = plt.figure(num=f'combined_non-virt_{scale}', figsize=(20/2.54, 15/2.54))
     num_added = 0
     for config_name, config in report.items():
         if config_name not in ('indir.0', 'flatten.0', 'opaque.0', 'subst.0'):
@@ -327,8 +384,8 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
 
         num_added += 1
         ax = fig.add_subplot(2, 2, num_added,
-            xscale='log',
-            yscale='log',
+            xscale=scale,
+            yscale=scale,
             xlabel='number of instructions' if num_added == 3 else None,
             ylabel='attack time in seconds' if num_added == 3 else None,
             title=friendly_names[config_name.partition('.')[0]])
@@ -362,9 +419,9 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             if result['attack_result'] in ('tracer_failed', 'taint_failed'):
                 # the failed entries are ones where we ran out of disk space
                 # so we put these at the maximum number of instructions
-                # with a close to zero (since log, 1) attack time
+                # with a close to zero (since log, not 0 but 1) attack time
                 x.append(max_trace_size)
-                y.append(1)
+                y.append(1 if scale == 'log' else 0)
                 c.append('#404040')
             else:
                 x.append(result['trace_size'] // 8)
@@ -392,7 +449,7 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
 
         if num_added == 3:
             ax.legend(handles=handles, labels=legend_descriptions)
-    figures['combined_non-virt'] = fig
+    figures[f'combined_non-virt_{scale}'] = fig
 
     # group results by sample_name
     sample_names = defaultdict(list)
@@ -411,11 +468,11 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
         z = []
         c = []
 
-        fig = plt.figure(num=sample_name, figsize=(20/2.54, 15/2.54))
+        fig = plt.figure(num=f'{sample_name}_{scale}', figsize=(20/2.54, 15/2.54))
         # fig.suptitle(sample_name)
         ax = fig.add_subplot(111,
-            xscale='log',
-            yscale='log',
+            xscale=scale,
+            yscale=scale,
             xlabel='number of instructions',
             ylabel='attack time in seconds')
 
@@ -446,7 +503,7 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
                 # so we put these at the maximum number of instructions
                 # with a close to zero (since log, 1) attack time
                 x.append(max_trace_size)
-                y.append(1)
+                y.append(1 if scale == 'log' else 0)
                 c.append('#404040')
             else:
                 x.append(result['trace_size'] // 8)
@@ -470,7 +527,7 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]]):
             handles.append(axhline)
 
         ax.legend(handles=handles, labels=legend_descriptions)
-        figures[sample_name] = fig
+        figures[f'{sample_name}_{scale}'] = fig
 
 
     return figures
@@ -482,10 +539,17 @@ def run(args):
         report = json.load(f)
 
     print('[*] generate_graphs')
-    graphs = generate_graphs(args, report)
-    if not graphs:
-        print('[-] generate_graphs')
+    graphs_log = generate_graphs(args, report, 'log')
+    if not graphs_log:
+        print('[-] generate_graphs(log)')
         return False
+
+    graphs_linear = generate_graphs(args, report, 'linear')
+    if not graphs_linear:
+        print('[-] generate_graphs(linear)')
+        return False
+    
+    graphs = {**graphs_log, **graphs_linear}
     
     if not os.path.exists(args.output):
         os.mkdir(args.output)
