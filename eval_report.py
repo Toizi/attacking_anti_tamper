@@ -313,17 +313,17 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]], scale):
         
         obf_name, _, coverage = config_name.partition('.')
         if obf_name != 'none':
-            data_by_config[obf_name][coverage] = (x, y, c)
+            data_by_config[obf_name][coverage] = (x, y, c, timeout_value)
         
         # put annotation that shows where the timeout threshold is
         handles = scatter.legend_elements()[0]
         if timeout_value:
             axhline = ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
             handles.append(axhline)
-            legend_descriptions.append('timeout threshold')
+            legend_descriptions.append('timeout')
 
-        # if scale == 'linear' and 'none.0' in config_name:
-        if 'none.0' in config_name:
+        if scale == 'linear' and 'none.0' in config_name:
+        # if 'none.0' in config_name:
             max_x = max(x)
             max_y = max(y)
             # plot a line from 0 to max to demonstrate that scaling appears to
@@ -341,32 +341,77 @@ def generate_graphs(args, report: Dict[str, List[Dict[str, Any]]], scale):
     
     # create one figure for each config. each figure contains all 3 coverages
     # side by side
-    # pprint(data_by_config)
-    cov_styles = {
-        '0': "o",
-        '10': "X",
-        '20': "D",
-    }
-    cov_colors = {
-        '0': "black",
-        '10': "blue",
-        '20': "violet",
-    }
-    for config_name, coverages in data_by_config.items():
-        fig = plt.figure(num=f'combined_{config_name}_{scale}', figsize=(20/2.54, 15/2.54))
-        ax = fig.add_subplot(1, 1, 1,
-            xscale=scale, yscale=scale,
-            xlabel='number of instructions',
-            ylabel='attack time in seconds')
-            # title=f'{cov}%')
-        for cov in ('0', '10', '20'):
-            x, y, c = coverages[cov]
+    # additionaly we print a table that contains interesting metrics for each
+    def print_t(*args, **kwargs):
+        if scale == 'log':
+            print(*args, **kwargs)
+    print_t('table')
+    for config_name in ('subst', 'indir', 'opaque', 'flatten', 'virt'):
+        coverages = data_by_config[config_name]
+        legend_descriptions = ['success', 'failure']
+        fig = plt.figure(num=f'combined_{config_name}_{scale}', figsize=(20/2.54, 11/2.54))
+
+        # find limits to allow better comparison
+        min_trace_size = min((min(x[0]) for x in coverages.values()))
+        max_trace_size = max((max(x[0]) for x in coverages.values()))
+
+        min_attack_time = min((min(x[1]) for x in coverages.values()))
+        max_attack_time = max((max(x[1]) for x in coverages.values()))
+
+        timeout_value = [x[3] for x in coverages.values() if x[3] is not None]
+        timeout_value = timeout_value[0] if timeout_value else None
+
+        print_t(r'\multirow{3}{*}{' + config_name[0].upper() + config_name[1:] + '}', end='')
+        for i, cov in enumerate(('0', '10', '20')):
+            ax = fig.add_subplot(1, 3, i + 1,
+                xscale=scale, yscale=scale,
+                xlabel='number of instructions' if i == 0 else None,
+                ylabel='attack time in seconds' if i == 0 else None,
+                title=f'{cov}%')
+
+            ax.set_ylim(bottom=0.65 * min_attack_time, top=max_attack_time * 1.4)
+            ax.set_xlim(left=0.65 * min_trace_size, right=max_trace_size * 1.4)
+
+            x, y, c, _ = coverages[cov]
             scatter = ax.scatter(x, y, c=c, cmap=cmap,
                 alpha=0.5,
-                marker=cov_styles[cov],
-                edgecolors=cov_colors[cov])
-        figures[f'combined_{config_name}_{scale}'] = fig
+                edgecolors='black')
 
+            trace_data = list(sorted(x))
+            attack_data = list(sorted(y))
+
+            trace_min = trace_data[0]
+            trace_max = trace_data[-1]
+            attack_min = attack_data[0]
+            attack_max = attack_data[-1]
+
+            trace_median = trace_data[len(trace_data)//2]
+            attack_median = attack_data[len(attack_data)//2]
+            trace_avg = sum(trace_data) / len(trace_data)
+            attack_avg = sum(attack_data) / len(attack_data)
+
+            print_t(' '.join((
+                     ' & \\textbf{' + cov + '}',
+                    f' & {int(trace_min//1000):,} & {int(trace_max//1000):,} & {int(trace_median//1000):,} & {int(trace_avg//1000):,}',
+                    f' & {int(attack_min):,} & {int(attack_max):,} & {int(attack_median):,} & {int(attack_avg):,}',
+                    r'\\',
+                    r'\cline{2-10}' if cov != '20' else '')))
+
+
+            handles = scatter.legend_elements()[0]
+            if timeout_value:
+                axhline = ax.axhline(y=timeout_value, linestyle='dashed', alpha=0.5)
+                handles.append(axhline)
+                legend_descriptions.append('timeout')
+
+            if i == 0:
+                ax.legend(handles=handles, labels=legend_descriptions,
+                    loc='lower right',)
+                    # bbox_to_anchor=(1.4, 0.02) if config_name == 'virt' else None)
+        
+        print_t(r'\hline \hline')
+            
+        figures[f'combined_{config_name}_{scale}'] = fig
 
 
     # create all non-virt obfuscations in one
