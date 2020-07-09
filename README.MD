@@ -66,9 +66,10 @@ instrace_logs
 ```
 
 ## Taint Attack
-Get help `src/taint_main -h`
+Get help `src/taint_main -h`.
+
 Run attack using previously generated `instrace_logs` directory
-`src/taint_main --json-output-path patches.json instrace_logs`
+`src/taint_main --json-output patches.json instrace_logs`
 This creates `patches.json` with a simple format.
 ```json
 {
